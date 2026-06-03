@@ -13,3 +13,4 @@ roest-v3-wav2vec2-315m/
 # Python Env
 .venv/
 __pycache__/
+/_tmp/
