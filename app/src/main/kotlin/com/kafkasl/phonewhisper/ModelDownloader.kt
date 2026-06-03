@@ -19,15 +19,23 @@ data class Model(
 
 val MODEL_CATALOG = listOf(
     Model(
-        "Roest Danish Wav2Vec2", 
+        "Russian (Vosk streaming)",
+        "vosk-model-small-streaming-ru",
+        22,
+        "★★★★ Offline Russian (streaming)",
+        recommended = true,
+        url = "https://github.com/gtubolcev/phone-whisper/releases/download/models/vosk-model-small-streaming-ru.tar.bz2"
+    ),
+    Model(
+        "Roest Danish Wav2Vec2",
         "roest-v3-wav2vec2-315m",
-        315, 
-        "★★★★★ Offline Danish", 
+        315,
+        "★★★★★ Offline Danish",
         recommended = false,
         url = "https://github.com/ArtificialTruth/phone-whisper/releases/download/v0.4.0/roest-v3-wav2vec2-315m.tar.bz2"
     ),
     Model("Parakeet 110M", "sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8",
-        100, "★★★ Best value", recommended = true),
+        100, "★★★ Best value", recommended = false),
     Model("Whisper Base", "sherpa-onnx-whisper-base.en",
         199, "★★★"),
     Model("Parakeet 0.6B", "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",

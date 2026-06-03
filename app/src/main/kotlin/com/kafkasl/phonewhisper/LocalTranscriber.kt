@@ -9,21 +9,39 @@ import java.io.File
  * Local on-device transcription via sherpa-onnx.
  * Models are loaded from the app's external files dir.
  */
-class LocalTranscriber private constructor(private val recognizer: OfflineRecognizer) {
+class LocalTranscriber private constructor(
+    private val offline: OfflineRecognizer?,
+    private val online: OnlineRecognizer?,
+) {
 
     /** Transcribe raw PCM float samples. Blocking — call from background thread. */
     fun transcribe(samples: FloatArray, sampleRate: Int = 16000): String {
-        val stream = recognizer.createStream()
+        online?.let { rec ->
+            // Streaming recognizer used in one-shot mode: feed all audio, append a
+            // short tail of silence so the encoder emits its final frames, then drain.
+            val stream = rec.createStream()
+            stream.acceptWaveform(samples, sampleRate)
+            stream.acceptWaveform(FloatArray(sampleRate / 2), sampleRate)
+            stream.inputFinished()
+            while (rec.isReady(stream)) rec.decode(stream)
+            val text = rec.getResult(stream).text
+            stream.release()
+            return text.trim()
+        }
+
+        val rec = offline!!
+        val stream = rec.createStream()
         stream.acceptWaveform(samples, sampleRate)
-        recognizer.decode(stream)
-        val result = recognizer.getResult(stream)
+        rec.decode(stream)
+        val result = rec.getResult(stream)
         stream.release()
         return result.text.trim()
     }
 
     /** Explicitly release native resources associated with the recognizer. */
     fun release() {
-        recognizer.release()
+        offline?.release()
+        online?.release()
     }
 
     companion object {
@@ -44,6 +62,18 @@ class LocalTranscriber private constructor(private val recognizer: OfflineRecogn
                 return null
             }
 
+            // Streaming (online) transducer models — e.g. Vosk/icefall zipformer2.
+            detectStreamingConfig(modelDir)?.let { onlineConfig ->
+                return try {
+                    val recognizer = OnlineRecognizer(assetManager = null, config = onlineConfig)
+                    Log.i(TAG, "Loaded streaming model: $modelName")
+                    LocalTranscriber(offline = null, online = recognizer)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to load streaming model: ${e.message}")
+                    null
+                }
+            }
+
             val config = detectModelConfig(modelDir) ?: run {
                 Log.e(TAG, "Could not detect model type in $modelDir")
                 return null
@@ -52,11 +82,46 @@ class LocalTranscriber private constructor(private val recognizer: OfflineRecogn
             return try {
                 val recognizer = OfflineRecognizer(assetManager = null, config = config)
                 Log.i(TAG, "Loaded model: $modelName")
-                LocalTranscriber(recognizer)
+                LocalTranscriber(offline = recognizer, online = null)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to load model: ${e.message}")
                 null
             }
+        }
+
+        /**
+         * Detect a streaming zipformer2 transducer (encoder/decoder/joiner + tokens).
+         * Distinguished from an offline transducer by "streaming" in the dir name or a
+         * `streaming` marker file, since both share the three-file layout.
+         */
+        private fun detectStreamingConfig(dir: File): OnlineRecognizerConfig? {
+            val p = dir.absolutePath
+            val tokens = "$p/tokens.txt"
+            if (!File(tokens).exists()) return null
+            val isStreaming = dir.name.contains("streaming", ignoreCase = true) ||
+                File(dir, "streaming").exists()
+            if (!isStreaming) return null
+
+            val encoder = findFile(p, "encoder") ?: return null
+            val decoder = findFile(p, "decoder") ?: return null
+            val joiner = findFile(p, "joiner") ?: return null
+
+            return OnlineRecognizerConfig(
+                featConfig = FeatureConfig(sampleRate = 16000, featureDim = 80),
+                modelConfig = OnlineModelConfig(
+                    transducer = OnlineTransducerModelConfig(
+                        encoder = encoder,
+                        decoder = decoder,
+                        joiner = joiner,
+                    ),
+                    tokens = tokens,
+                    numThreads = 2,
+                    modelType = "zipformer2",
+                ),
+                decodingMethod = "modified_beam_search",
+                maxActivePaths = 10,
+                enableEndpoint = false,
+            )
         }
 
         /** Auto-detect model type from files present in the directory. */
