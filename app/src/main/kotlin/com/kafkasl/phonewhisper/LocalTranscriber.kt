@@ -92,8 +92,11 @@ class LocalTranscriber private constructor(
                     }
                 }
                 if (!aborted) {
-                    // Drain: append a short tail of silence so the encoder flushes, then finalize.
-                    stream.acceptWaveform(FloatArray(sampleRate / 2), sampleRate)
+                    // Drain: append a tail of silence so the encoder gets the right-context
+                    // it needs to emit the final token(s). Larger models have more decode
+                    // latency and otherwise clip the last 1-2 chars of the last word, so be
+                    // generous — decoding silence is cheap.
+                    stream.acceptWaveform(FloatArray(sampleRate * 6 / 5), sampleRate) // 1.2s
                     stream.inputFinished()
                     while (rec.isReady(stream)) rec.decode(stream)
                     commit(rec.getResult(stream).text)
