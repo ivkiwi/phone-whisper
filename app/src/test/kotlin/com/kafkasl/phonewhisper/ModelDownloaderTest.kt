@@ -41,10 +41,17 @@ class ModelDownloaderTest {
     }
 
     @Test fun `catalog has expected structure`() {
-        assertEquals(5, MODEL_CATALOG.size)
+        assertEquals(9, MODEL_CATALOG.size)
         assertTrue(MODEL_CATALOG.any { it.recommended })
-        assertTrue(MODEL_CATALOG.all { it.archive.startsWith("sherpa-onnx-") || it.archive.startsWith("roest-") })
         assertTrue(MODEL_CATALOG.all { it.sizeMb > 0 })
+        assertTrue(MODEL_CATALOG.all { it.archive.isNotBlank() })
+        // archive names are used as on-disk dir names, so they must be unique
+        assertEquals(MODEL_CATALOG.size, MODEL_CATALOG.map { it.archive }.toSet().size)
+        // every model has a source: a Hugging Face source, an explicit url, or a
+        // default sherpa-onnx tar archive resolved from BASE_URL
+        assertTrue(MODEL_CATALOG.all {
+            it.hf != null || it.url != null || it.archive.startsWith("sherpa-onnx-")
+        })
     }
 
     // -- helpers --
