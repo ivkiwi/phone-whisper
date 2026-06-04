@@ -15,16 +15,44 @@ data class Model(
     val quality: String,
     val recommended: Boolean = false,
     val url: String? = null,
+    /** If set, model files are fetched individually from Hugging Face (no tar archive). */
+    val hf: HfSource? = null,
+)
+
+/** A single file to download from a Hugging Face repo, placed flat as [local] in the model dir. */
+data class HfFile(val remote: String, val local: String)
+
+/** A Hugging Face model source: a set of individual files downloaded flat into the model dir. */
+data class HfSource(
+    val repo: String,
+    val revision: String = "main",
+    val files: List<HfFile>,
+) {
+    fun url(f: HfFile) = "https://huggingface.co/$repo/resolve/$revision/${f.remote}"
+}
+
+private val VOSK_STREAMING_FILES = listOf(
+    HfFile("am-onnx/encoder.int8.onnx", "encoder.int8.onnx"),
+    HfFile("am-onnx/decoder.int8.onnx", "decoder.int8.onnx"),
+    HfFile("am-onnx/joiner.int8.onnx", "joiner.int8.onnx"),
+    HfFile("lang/tokens.txt", "tokens.txt"),
 )
 
 val MODEL_CATALOG = listOf(
     Model(
-        "Russian (Vosk streaming)",
+        "Russian (Vosk small, streaming)",
         "vosk-model-small-streaming-ru",
-        22,
+        28,
         "★★★★ Offline Russian (streaming)",
         recommended = true,
-        url = "https://github.com/gtubolcev/phone-whisper/releases/download/models/vosk-model-small-streaming-ru.tar.bz2"
+        hf = HfSource("alphacep/vosk-model-small-streaming-ru", files = VOSK_STREAMING_FILES),
+    ),
+    Model(
+        "Russian (Vosk large, streaming)",
+        "vosk-model-streaming-ru",
+        72,
+        "★★★★★ Offline Russian (streaming, large)",
+        hf = HfSource("alphacep/vosk-model-streaming-ru", files = VOSK_STREAMING_FILES),
     ),
     Model(
         "Roest Danish Wav2Vec2",
@@ -63,24 +91,80 @@ object ModelDownloader {
     fun isInstalled(ctx: Context, model: Model) =
         modelDir(ctx, model).exists()
 
-    /** Download and extract model. Callbacks fire on background thread. */
+    /** Download (and extract, if archived) a model. Callbacks fire on background thread. */
     fun download(ctx: Context, model: Model, onState: (DownloadState) -> Unit) {
-        val url = model.url ?: "$BASE_URL/${model.archive}.tar.bz2"
-        val tmpFile = File(ctx.cacheDir, "${model.archive}.tar.bz2")
-        val outDir = File(ctx.filesDir, "models")
-
         Thread {
             try {
-                downloadFile(url, tmpFile, onState)
-                onState(DownloadState.Extracting)
-                extractTarBz2(tmpFile, outDir)
+                val hf = model.hf
+                if (hf != null) {
+                    downloadHf(ctx, model, hf, onState)
+                } else {
+                    val url = model.url ?: "$BASE_URL/${model.archive}.tar.bz2"
+                    val tmpFile = File(ctx.cacheDir, "${model.archive}.tar.bz2")
+                    try {
+                        downloadFile(url, tmpFile, onState)
+                        onState(DownloadState.Extracting)
+                        extractTarBz2(tmpFile, File(ctx.filesDir, "models"))
+                    } finally {
+                        tmpFile.delete()
+                    }
+                }
                 onState(DownloadState.Done)
             } catch (e: Exception) {
                 onState(DownloadState.Error(e.message ?: "Unknown error"))
-            } finally {
-                tmpFile.delete()
             }
         }.start()
+    }
+
+    /**
+     * Download a model's files individually from Hugging Face into models/<archive>/,
+     * flattening remote paths. Writes to a temp dir first, then swaps atomically so a
+     * partial download never looks installed.
+     */
+    private fun downloadHf(
+        ctx: Context, model: Model, hf: HfSource, onState: (DownloadState) -> Unit
+    ) {
+        val finalDir = File(ctx.filesDir, "models/${model.archive}")
+        val tmpDir = File(ctx.filesDir, "models/.${model.archive}.partial")
+        tmpDir.deleteRecursively()
+        tmpDir.mkdirs()
+        try {
+            val total = model.sizeMb * 1_000_000L
+            var done = 0L
+            for (f in hf.files) {
+                val dest = File(tmpDir, f.local)
+                dest.parentFile?.mkdirs()
+                downloadTo(hf.url(f), dest) { delta ->
+                    done += delta
+                    if (total > 0)
+                        onState(DownloadState.Downloading((done.toFloat() / total).coerceIn(0f, 1f)))
+                }
+            }
+            onState(DownloadState.Extracting) // brief "finishing" state while we swap into place
+            if (finalDir.exists()) finalDir.deleteRecursively()
+            if (!tmpDir.renameTo(finalDir)) throw IOException("Failed to install model into ${finalDir.name}")
+        } catch (e: Exception) {
+            tmpDir.deleteRecursively()
+            throw e
+        }
+    }
+
+    /** Download a single URL to [dest], invoking [onDelta] with each chunk's byte count. */
+    private fun downloadTo(url: String, dest: File, onDelta: (Int) -> Unit) {
+        client.newCall(Request.Builder().url(url).build()).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("HTTP ${response.code} for $url")
+            val body = response.body ?: throw IOException("Empty response for $url")
+            body.byteStream().use { src ->
+                FileOutputStream(dest).use { dst ->
+                    val buf = ByteArray(16384)
+                    var n: Int
+                    while (src.read(buf).also { n = it } != -1) {
+                        dst.write(buf, 0, n)
+                        onDelta(n)
+                    }
+                }
+            }
+        }
     }
 
     fun delete(ctx: Context, model: Model) =

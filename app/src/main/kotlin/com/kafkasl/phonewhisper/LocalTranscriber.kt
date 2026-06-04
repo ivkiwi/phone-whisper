@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.k2fsa.sherpa.onnx.*
 import java.io.File
+import java.util.concurrent.LinkedBlockingQueue
 
 /**
  * Local on-device transcription via sherpa-onnx.
@@ -13,6 +14,17 @@ class LocalTranscriber private constructor(
     private val offline: OfflineRecognizer?,
     private val online: OnlineRecognizer?,
 ) {
+
+    /** True if the loaded model is a streaming (online) model. */
+    val isStreaming: Boolean get() = online != null
+
+    /**
+     * Open an incremental streaming session. Feed audio chunks as they are captured
+     * with [StreamingSession.accept] and call [StreamingSession.finish] to get the
+     * final text. Returns null for offline models (use [transcribe] instead).
+     */
+    fun newStreamingSession(sampleRate: Int = 16000): StreamingSession? =
+        online?.let { StreamingSession(it, sampleRate) }
 
     /** Transcribe raw PCM float samples. Blocking — call from background thread. */
     fun transcribe(samples: FloatArray, sampleRate: Int = 16000): String {
@@ -44,6 +56,94 @@ class LocalTranscriber private constructor(
         online?.release()
     }
 
+    /**
+     * Incremental streaming decode session for an online recognizer.
+     *
+     * Audio chunks are fed via [accept] (non-blocking — they are queued) and decoded
+     * on a dedicated worker thread, so decoding overlaps with recording and the result
+     * is ready almost immediately on [finish]. Endpoint detection commits a segment and
+     * resets the stream on each detected pause, so long dictations with pauses accumulate
+     * cleanly. All native recognizer/stream calls happen only on the worker thread.
+     */
+    class StreamingSession internal constructor(
+        private val rec: OnlineRecognizer,
+        private val sampleRate: Int,
+    ) {
+        private val stream = rec.createStream()
+        private val queue = LinkedBlockingQueue<FloatArray>()
+        private val committed = StringBuilder()
+        @Volatile private var partial = ""
+        @Volatile private var aborted = false
+        private val lock = Any()
+
+        private val worker = Thread {
+            try {
+                while (true) {
+                    val chunk = queue.take()
+                    if (chunk === POISON) break
+                    stream.acceptWaveform(chunk, sampleRate)
+                    while (rec.isReady(stream)) rec.decode(stream)
+                    val text = rec.getResult(stream).text
+                    if (rec.isEndpoint(stream)) {
+                        commit(text)
+                        rec.reset(stream)
+                    } else {
+                        partial = text.trim()
+                    }
+                }
+                if (!aborted) {
+                    // Drain: append a short tail of silence so the encoder flushes, then finalize.
+                    stream.acceptWaveform(FloatArray(sampleRate / 2), sampleRate)
+                    stream.inputFinished()
+                    while (rec.isReady(stream)) rec.decode(stream)
+                    commit(rec.getResult(stream).text)
+                }
+            } catch (e: Exception) {
+                Log.e("StreamingSession", "decode error: ${e.message}")
+            } finally {
+                stream.release()
+            }
+        }.apply { isDaemon = true; start() }
+
+        private fun commit(text: String) {
+            synchronized(lock) {
+                val t = text.trim()
+                if (t.isNotEmpty()) {
+                    if (committed.isNotEmpty()) committed.append(' ')
+                    committed.append(t)
+                }
+                partial = ""
+            }
+        }
+
+        /** Queue captured PCM float samples for decoding (copied internally). */
+        fun accept(samples: FloatArray) {
+            if (samples.isNotEmpty()) queue.put(samples.copyOf())
+        }
+
+        /** Best-effort text so far (committed segments + current partial). Thread-safe. */
+        fun currentText(): String = synchronized(lock) {
+            (committed.toString() + " " + partial).trim()
+        }
+
+        /** Signal end of audio, wait for decoding to finish, return final text. */
+        fun finish(): String {
+            queue.put(POISON)
+            worker.join()
+            return currentText()
+        }
+
+        /** Discard the session without finalizing (e.g. recording cancelled). */
+        fun abandon() {
+            aborted = true
+            queue.put(POISON)
+        }
+
+        private companion object {
+            private val POISON = FloatArray(0)
+        }
+    }
+
     companion object {
         private const val TAG = "LocalTranscriber"
 
@@ -51,7 +151,9 @@ class LocalTranscriber private constructor(
         fun availableModels(ctx: Context): List<String> {
             val modelsDir = File(ctx.filesDir, "models")
             if (!modelsDir.exists()) return emptyList()
-            return modelsDir.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
+            return modelsDir.listFiles()
+                ?.filter { it.isDirectory && !it.name.startsWith(".") }
+                ?.map { it.name } ?: emptyList()
         }
 
         /** Create a LocalTranscriber for the given model directory name. Returns null on failure. */
@@ -120,7 +222,7 @@ class LocalTranscriber private constructor(
                 ),
                 decodingMethod = "modified_beam_search",
                 maxActivePaths = 10,
-                enableEndpoint = false,
+                enableEndpoint = true,
             )
         }
 

@@ -60,6 +60,8 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var feedbackLayoutParams: WindowManager.LayoutParams? = null
     private var audioRecord: AudioRecord? = null
     private var pcmStream: ByteArrayOutputStream? = null
+    @Volatile
+    private var streamSession: LocalTranscriber.StreamingSession? = null
     private val handler = Handler(Looper.getMainLooper())
     private val hideFeedback = Runnable {
         feedbackView?.animate()?.alpha(0f)?.setDuration(180)?.withEndAction {
@@ -120,6 +122,8 @@ class WhisperAccessibilityService : AccessibilityService() {
         instance = null
         removeOverlay()
         handler.removeCallbacks(releaseModelRunnable)
+        streamSession?.abandon()
+        streamSession = null
         synchronized(this) {
             localTranscriber?.let {
                 Log.i(TAG, "Releasing model during service destroy")
@@ -398,6 +402,12 @@ class WhisperAccessibilityService : AccessibilityService() {
         } catch (_: SecurityException) { toast("Audio permission denied"); return }
 
         pcmStream = ByteArrayOutputStream()
+        // If a streaming model is already loaded, decode incrementally while recording so
+        // the result is ready almost instantly on stop. Otherwise fall back to one-shot.
+        val local = localTranscriber
+        streamSession = if (useLocal && local != null && local.isStreaming)
+            local.newStreamingSession(SAMPLE_RATE) else null
+
         audioRecord!!.startRecording()
         state = State.RECORDING
         setBusy(false)
@@ -408,9 +418,24 @@ class WhisperAccessibilityService : AccessibilityService() {
             val buf = ByteArray(bufSize)
             while (state == State.RECORDING) {
                 val n = audioRecord?.read(buf, 0, buf.size) ?: break
-                if (n > 0) pcmStream?.write(buf, 0, n)
+                if (n > 0) {
+                    pcmStream?.write(buf, 0, n)
+                    streamSession?.let { feedPcmChunk(it, buf, n) }
+                }
             }
         }
+    }
+
+    /** Convert 16-bit little-endian PCM bytes to float samples and queue them. */
+    private fun feedPcmChunk(session: LocalTranscriber.StreamingSession, buf: ByteArray, n: Int) {
+        val count = n / 2
+        val fa = FloatArray(count)
+        for (i in 0 until count) {
+            val lo = buf[i * 2].toInt() and 0xFF
+            val hi = buf[i * 2 + 1].toInt()
+            fa[i] = ((hi shl 8) or lo).toShort().toFloat() / 32768f
+        }
+        session.accept(fa)
     }
 
     private fun stopAndTranscribe() {
@@ -425,11 +450,15 @@ class WhisperAccessibilityService : AccessibilityService() {
 
         val pcm = pcmStream?.toByteArray() ?: ByteArray(0)
         pcmStream = null
+        val session = streamSession
+        streamSession = null
 
-        if (pcm.isEmpty()) { reset("No audio captured"); return }
+        if (pcm.isEmpty()) { session?.abandon(); reset("No audio captured"); return }
 
         val useLocal = prefs().getBoolean("use_local", true)
-        if (useLocal) {
+        if (useLocal && session != null) {
+            finishStreaming(session)
+        } else if (useLocal) {
             thread {
                 var attempts = 0
                 // Wait up to 10 seconds (100 * 100ms) for local model to load if in progress
@@ -448,6 +477,27 @@ class WhisperAccessibilityService : AccessibilityService() {
             }
         } else {
             transcribeApi(pcm)
+        }
+    }
+
+    /** Drain an incremental streaming session and route its final text. */
+    private fun finishStreaming(session: LocalTranscriber.StreamingSession) {
+        thread {
+            try {
+                val t0 = System.currentTimeMillis()
+                val text = session.finish()
+                Log.i(TAG, "Streaming transcription drained in ${System.currentTimeMillis() - t0}ms")
+                handleTranscriptionResult(text)
+            } catch (e: Exception) {
+                Log.e(TAG, "Streaming transcription failed", e)
+                resetModelReleaseTimer()
+                handler.post {
+                    toast("Local error: ${e.message}")
+                    state = State.IDLE
+                    setBusy(false)
+                    setAppearance(COLOR_IDLE)
+                }
+            }
         }
     }
 
