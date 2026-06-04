@@ -38,6 +38,20 @@ private val VOSK_STREAMING_FILES = listOf(
     HfFile("lang/tokens.txt", "tokens.txt"),
 )
 
+// GigaAM v3 (Smirnov75/GigaAM-v3-sherpa-onnx). Remote names are remapped to the flat
+// model.onnx / encoder/decoder/joiner + tokens.txt layout our detector expects.
+private val GIGAAM_V3_E2E_CTC_FILES = listOf(
+    HfFile("gigaam_v3_e2e_ctc_int8.onnx", "model.int8.onnx"),
+    HfFile("gigaam_v3_e2e_ctc_tokens.txt", "tokens.txt"),
+)
+
+private val GIGAAM_V3_E2E_RNNT_FILES = listOf(
+    HfFile("gigaam_v3_e2e_rnnt_encoder_int8.onnx", "encoder.int8.onnx"),
+    HfFile("gigaam_v3_e2e_rnnt_decoder.onnx", "decoder.onnx"),
+    HfFile("gigaam_v3_e2e_rnnt_joint.onnx", "joiner.onnx"),
+    HfFile("gigaam_v3_e2e_rnnt_tokens.txt", "tokens.txt"),
+)
+
 val MODEL_CATALOG = listOf(
     Model(
         "Russian (Vosk small, streaming)",
@@ -53,6 +67,20 @@ val MODEL_CATALOG = listOf(
         72,
         "★★★★★ Offline Russian (streaming, large)",
         hf = HfSource("alphacep/vosk-model-streaming-ru", files = VOSK_STREAMING_FILES),
+    ),
+    Model(
+        "Russian (GigaAM v3 CTC)",
+        "gigaam-v3-e2e-ctc-ru",
+        319,
+        "★★★★★ Offline Russian (punctuation, offline)",
+        hf = HfSource("Smirnov75/GigaAM-v3-sherpa-onnx", files = GIGAAM_V3_E2E_CTC_FILES),
+    ),
+    Model(
+        "Russian (GigaAM v3 RNN-T)",
+        "gigaam-v3-e2e-rnnt-ru",
+        326,
+        "★★★★★ Offline Russian (punctuation, most accurate)",
+        hf = HfSource("Smirnov75/GigaAM-v3-sherpa-onnx", files = GIGAAM_V3_E2E_RNNT_FILES),
     ),
     Model(
         "Roest Danish Wav2Vec2",
