@@ -165,7 +165,9 @@ class LocalTranscriber private constructor(
             }
 
             // Streaming (online) transducer models — e.g. Vosk/icefall zipformer2.
-            detectStreamingConfig(modelDir)?.let { onlineConfig ->
+            val greedy = ctx.getSharedPreferences("phonewhisper", Context.MODE_PRIVATE)
+                .getBoolean("greedy_decoding", false)
+            detectStreamingConfig(modelDir, greedy)?.let { onlineConfig ->
                 return try {
                     val recognizer = OnlineRecognizer(assetManager = null, config = onlineConfig)
                     Log.i(TAG, "Loaded streaming model: $modelName")
@@ -195,8 +197,13 @@ class LocalTranscriber private constructor(
          * Detect a streaming zipformer2 transducer (encoder/decoder/joiner + tokens).
          * Distinguished from an offline transducer by "streaming" in the dir name or a
          * `streaming` marker file, since both share the three-file layout.
+         *
+         * [greedy] selects greedy_search over modified_beam_search. Beam search keeps
+         * several competing hypotheses and tends to "hallucinate" plausible words on
+         * noise/pauses (more pronounced on the larger model); greedy only emits the
+         * single most-likely token, staying more faithful to the audio.
          */
-        private fun detectStreamingConfig(dir: File): OnlineRecognizerConfig? {
+        private fun detectStreamingConfig(dir: File, greedy: Boolean): OnlineRecognizerConfig? {
             val p = dir.absolutePath
             val tokens = "$p/tokens.txt"
             if (!File(tokens).exists()) return null
@@ -207,6 +214,8 @@ class LocalTranscriber private constructor(
             val encoder = findFile(p, "encoder") ?: return null
             val decoder = findFile(p, "decoder") ?: return null
             val joiner = findFile(p, "joiner") ?: return null
+
+            val decoding = if (greedy) "greedy_search" else "modified_beam_search"
 
             return OnlineRecognizerConfig(
                 featConfig = FeatureConfig(sampleRate = 16000, featureDim = 80),
@@ -220,7 +229,7 @@ class LocalTranscriber private constructor(
                     numThreads = 2,
                     modelType = "zipformer2",
                 ),
-                decodingMethod = "modified_beam_search",
+                decodingMethod = decoding,
                 maxActivePaths = 10,
                 enableEndpoint = true,
             )

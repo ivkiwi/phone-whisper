@@ -103,6 +103,21 @@ class MainActivity : AppCompatActivity() {
         modelContainer = vertical(0)
         modelContainer.addView(sectionHeader("Local models"))
         for (m in MODEL_CATALOG) modelContainer.addView(buildModelRow(m))
+
+        val greedySwitch = MaterialSwitch(this).apply {
+            isChecked = prefs().getBoolean("greedy_decoding", false)
+            isClickable = false
+        }
+        modelContainer.addView(settingsRow(
+            "Greedy decoding",
+            "Fewer hallucinations on the larger model (slightly less context)",
+            greedySwitch
+        ) {
+            val newVal = !greedySwitch.isChecked
+            prefs().edit().putBoolean("greedy_decoding", newVal).apply()
+            greedySwitch.isChecked = newVal
+            WhisperAccessibilityService.instance?.reloadModel()
+        })
         root.addView(modelContainer)
 
         // --- Post-Processing Section ---
