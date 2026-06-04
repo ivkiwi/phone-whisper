@@ -724,12 +724,27 @@ class WhisperAccessibilityService : AccessibilityService() {
         if (pasteOk) return true
 
         if (node.isEditable || node.className?.toString()?.contains("EditText") == true) {
-            val current = node.text?.toString().orEmpty()
-            val start = if (node.textSelectionStart >= 0) node.textSelectionStart else current.length
-            val end = if (node.textSelectionEnd >= 0) node.textSelectionEnd else start
-            val replacementStart = minOf(start, end)
-            val replacementEnd = maxOf(start, end)
-            val updated = current.replaceRange(replacementStart, replacementEnd, text)
+            // Resolve the field's real existing text: placeholders/hints (esp. in web
+            // editors) are reported as the value and must not be prepended to dictation.
+            val resolved = InjectionText.resolveEditableText(
+                rawText = node.text?.toString().orEmpty(),
+                hintText = node.hintText?.toString().orEmpty(),
+                contentDescription = node.contentDescription?.toString().orEmpty(),
+                className = node.className?.toString().orEmpty(),
+                packageName = node.packageName?.toString().orEmpty(),
+                isFocused = node.isFocused,
+                selectionStart = node.textSelectionStart,
+                selectionEnd = node.textSelectionEnd,
+            )
+            val current = resolved.text
+            val updated = if (current.isEmpty()) {
+                resolved.ignoredReason?.let { Log.i(TAG, "Treating field text as empty ($it)") }
+                text
+            } else {
+                val start = if (node.textSelectionStart in 0..current.length) node.textSelectionStart else current.length
+                val end = if (node.textSelectionEnd in 0..current.length) node.textSelectionEnd else start
+                current.replaceRange(minOf(start, end), maxOf(start, end), text)
+            }
             val args = Bundle().apply {
                 putCharSequence(
                     AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
