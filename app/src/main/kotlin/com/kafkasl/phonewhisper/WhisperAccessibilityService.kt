@@ -226,6 +226,11 @@ class WhisperAccessibilityService : AccessibilityService() {
         overlay.setOnTouchListener { v, ev ->
             when (ev.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    // The overlay window is larger than the visible button (for the ring).
+                    // Ignore touches that land outside the button circle so they pass
+                    // through to the app underneath instead of being swallowed.
+                    if (!isInsideButton(ev.x, ev.y, ringSize, buttonSize))
+                        return@setOnTouchListener false
                     startX = params.x; startY = params.y
                     touchX = ev.rawX; touchY = ev.rawY
                     true
@@ -287,6 +292,15 @@ class WhisperAccessibilityService : AccessibilityService() {
         feedbackView = feedback
         layoutParams = params
         feedbackLayoutParams = feedbackParams
+    }
+
+    /** True if (x,y) within the overlay window falls inside the centered button circle. */
+    private fun isInsideButton(x: Float, y: Float, overlaySize: Int, buttonSize: Int): Boolean {
+        val center = overlaySize / 2f
+        val radius = buttonSize / 2f
+        val dx = x - center
+        val dy = y - center
+        return dx * dx + dy * dy <= radius * radius
     }
 
     private fun removeOverlay() {
