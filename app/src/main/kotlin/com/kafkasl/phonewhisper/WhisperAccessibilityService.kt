@@ -16,6 +16,7 @@ import android.media.MediaRecorder
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
@@ -31,6 +32,7 @@ import android.widget.Toast
 import java.io.ByteArrayOutputStream
 import kotlin.concurrent.thread
 import kotlin.math.abs
+import kotlin.math.sqrt
 
 class WhisperAccessibilityService : AccessibilityService() {
 
@@ -58,6 +60,7 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var overlayView: FrameLayout? = null
     private var button: ImageView? = null
     private var spinner: ProgressBar? = null
+    private var equalizerView: EqualizerView? = null
     private var feedbackView: TextView? = null
     private var layoutParams: WindowManager.LayoutParams? = null
     private var feedbackLayoutParams: WindowManager.LayoutParams? = null
@@ -66,6 +69,20 @@ class WhisperAccessibilityService : AccessibilityService() {
     @Volatile
     private var streamSession: LocalTranscriber.StreamingSession? = null
     private val handler = Handler(Looper.getMainLooper())
+    // Smoothed microphone level driving the recording animation (button scale + equalizer).
+    @Volatile private var targetRecordingLevel = 0f
+    private var renderedRecordingLevel = 0f
+    private val animateRecordingLevel = object : Runnable {
+        override fun run() {
+            if (state != State.RECORDING) return
+            renderedRecordingLevel += (targetRecordingLevel - renderedRecordingLevel) * 0.4f
+            val scale = 1f + renderedRecordingLevel * 0.4f
+            button?.scaleX = scale
+            button?.scaleY = scale
+            equalizerView?.setLevel(renderedRecordingLevel)
+            handler.postDelayed(this, 16)
+        }
+    }
     private var screenReceiverRegistered = false
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -216,9 +233,12 @@ class WhisperAccessibilityService : AccessibilityService() {
             background = circle(COLOR_IDLE)
         }
 
+        val equalizer = EqualizerView(this).apply { visibility = View.GONE }
+
         val overlay = FrameLayout(this).apply {
             addView(ring, FrameLayout.LayoutParams(ringSize, ringSize, Gravity.CENTER))
             addView(img, FrameLayout.LayoutParams(buttonSize, buttonSize, Gravity.CENTER))
+            addView(equalizer, FrameLayout.LayoutParams((24 * dp).toInt(), (24 * dp).toInt(), Gravity.CENTER))
         }
 
         val params = WindowManager.LayoutParams(
@@ -301,6 +321,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         overlayView = overlay
         button = img
         spinner = ring
+        equalizerView = equalizer
         feedbackView = feedback
         layoutParams = params
         feedbackLayoutParams = feedbackParams
@@ -327,6 +348,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
         button = null
         spinner = null
+        equalizerView = null
         layoutParams = null
         feedbackLayoutParams = null
     }
@@ -381,19 +403,49 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun startPulse() {
-        button?.let {
-            it.animate().alpha(0.4f).setDuration(500).withEndAction {
-                it.animate().alpha(1f).setDuration(500).withEndAction {
-                    if (state == State.RECORDING) startPulse()
-                }.start()
-            }.start()
-        }
-    }
-
-    private fun stopPulse() {
+    /** Show the voice-reactive recording visual: hide the mic icon, reveal the equalizer. */
+    private fun startRecordingAnimation() {
+        targetRecordingLevel = 0f
+        renderedRecordingLevel = 0f
         button?.animate()?.cancel()
         button?.alpha = 1f
+        button?.setImageDrawable(null)
+        equalizerView?.reset()
+        equalizerView?.visibility = View.VISIBLE
+        handler.removeCallbacks(animateRecordingLevel)
+        handler.post(animateRecordingLevel)
+    }
+
+    /** Tear down the recording visual and restore the idle mic button. */
+    private fun stopRecordingAnimation() {
+        handler.removeCallbacks(animateRecordingLevel)
+        targetRecordingLevel = 0f
+        renderedRecordingLevel = 0f
+        button?.animate()?.cancel()
+        button?.scaleX = 1f
+        button?.scaleY = 1f
+        button?.alpha = 1f
+        button?.setImageResource(R.drawable.ic_mic)
+        equalizerView?.visibility = View.GONE
+        equalizerView?.reset()
+    }
+
+    /** Compute an RMS level from a PCM chunk and feed it to the recording animation. */
+    private fun updateAudioLevel(buf: ByteArray, byteCount: Int) {
+        var sum = 0.0
+        var samples = 0
+        var i = 0
+        while (i + 1 < byteCount) {
+            val lo = buf[i].toInt() and 0xFF
+            val hi = buf[i + 1].toInt()
+            val sample = ((hi shl 8) or lo).toShort().toInt()
+            sum += sample.toDouble() * sample
+            samples++
+            i += 2
+        }
+        if (samples == 0) return
+        val rms = sqrt(sum / samples) / 32768.0
+        targetRecordingLevel = (rms * 8.5).coerceIn(0.02, 1.0).toFloat()
     }
 
     // --- State machine ---
@@ -438,7 +490,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         state = State.RECORDING
         setBusy(false)
         setAppearance(COLOR_RECORDING)
-        startPulse()
+        startRecordingAnimation()
 
         thread {
             val buf = ByteArray(bufSize)
@@ -446,6 +498,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                 val n = audioRecord?.read(buf, 0, buf.size) ?: break
                 if (n > 0) {
                     pcmStream?.write(buf, 0, n)
+                    updateAudioLevel(buf, n)
                     streamSession?.let { feedPcmChunk(it, buf, n) }
                 }
             }
@@ -466,7 +519,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     private fun stopAndTranscribe() {
         state = State.TRANSCRIBING
-        stopPulse()
+        stopRecordingAnimation()
         setAppearance(COLOR_BUSY)
         setBusy(true)
 
@@ -645,7 +698,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         streamSession?.abandon()
         streamSession = null
         pcmStream = null
-        stopPulse()
+        stopRecordingAnimation()
         setBusy(false)
         setAppearance(COLOR_IDLE)
     }
