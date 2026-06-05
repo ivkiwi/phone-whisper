@@ -1,9 +1,12 @@
 package com.kafkasl.phonewhisper
 
 import android.accessibilityservice.AccessibilityService
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.ColorStateList
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
@@ -63,6 +66,12 @@ class WhisperAccessibilityService : AccessibilityService() {
     @Volatile
     private var streamSession: LocalTranscriber.StreamingSession? = null
     private val handler = Handler(Looper.getMainLooper())
+    private var screenReceiverRegistered = false
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_SCREEN_OFF) cancelRecording("screen_off")
+        }
+    }
     private val hideFeedback = Runnable {
         feedbackView?.animate()?.alpha(0f)?.setDuration(180)?.withEndAction {
             feedbackView?.visibility = View.GONE
@@ -107,6 +116,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
+        registerScreenReceiver()
         showOverlay()
         // Try to load local model in background, and schedule release if unused
         thread {
@@ -120,6 +130,8 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         instance = null
+        unregisterScreenReceiver()
+        cancelRecording("service_destroy")
         removeOverlay()
         handler.removeCallbacks(releaseModelRunnable)
         streamSession?.abandon()
@@ -620,6 +632,38 @@ class WhisperAccessibilityService : AccessibilityService() {
         state = State.IDLE
         setBusy(false)
         setAppearance(COLOR_IDLE)
+    }
+
+    /** Abort an in-progress recording without transcribing (e.g. screen turned off). */
+    private fun cancelRecording(reason: String) {
+        if (state != State.RECORDING) return
+        Log.i(TAG, "Cancelling recording: $reason")
+        state = State.IDLE
+        try { audioRecord?.stop() } catch (_: IllegalStateException) {}
+        audioRecord?.release()
+        audioRecord = null
+        streamSession?.abandon()
+        streamSession = null
+        pcmStream = null
+        stopPulse()
+        setBusy(false)
+        setAppearance(COLOR_IDLE)
+    }
+
+    private fun registerScreenReceiver() {
+        if (screenReceiverRegistered) return
+        registerReceiver(screenReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF))
+        screenReceiverRegistered = true
+    }
+
+    private fun unregisterScreenReceiver() {
+        if (!screenReceiverRegistered) return
+        try {
+            unregisterReceiver(screenReceiver)
+        } catch (_: IllegalArgumentException) {
+            // Receiver may already be gone if Android tore down the service process.
+        }
+        screenReceiverRegistered = false
     }
 
     // --- Text injection ---
