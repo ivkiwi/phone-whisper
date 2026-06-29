@@ -2,7 +2,7 @@
   <img src="docs/logo.svg" width="128" height="128" alt="Phone Whisper Logo">
 </p>
 
-# Phone Whisper (with Roest Danish ASR Support)
+# Phone Whisper (with BYOK provider-agnostic cloud transcryption and post cleanup)
 
 Push-to-talk dictation for Android, featuring local, offline Danish voice input.
 
