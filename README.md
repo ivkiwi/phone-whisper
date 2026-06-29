@@ -6,7 +6,17 @@
 
 Push-to-talk dictation for Android, featuring local, offline Danish voice input.
 
-This repository is a fork of the excellent [Phone Whisper](https://github.com/kafkasl/phone-whisper) by [@kafkasl](https://github.com/kafkasl), modified to add native support for the Danish **Roest Wav2Vec2** speech recognition model.
+This repository is a fork of [@gtubolcev/phone-whisper](https://github.com/gtubolcev/phone-whisper), which is itself a fork of the excellent [Phone Whisper](https://github.com/kafkasl/phone-whisper) by [@kafkasl](https://github.com/kafkasl). Huge lineage. Tremendous fork energy. The original app got Danish **Roest Wav2Vec2** support; this fork-of-a-fork adds the cloud provider freedom package on top.
+
+## Fork-of-a-fork: BYOK Edition
+
+This is the OpenAI-compatible, bring-your-own-key build. Very important. Many such providers.
+
+- **BYOK**: use your own API key with any OpenAI-compatible HTTPS base URL.
+- **Cloud transcription is separate from cleanup**: transcription can fully replace the local model and use its own API key/base URL/model.
+- **Cleanup/postprocessing has its own provider config**: different API key, different base URL, different chat model. Total separation. Beautiful.
+- **Model picker uses the configured provider**: available models are fetched from that endpoint's `/models` response, not from a hardcoded OpenAI-only list.
+- **Debug APK can install next to upstream 0.4.1**: debug builds use `com.kafkasl.phonewhisper.openai` and the launcher label `Phone Whisper OpenAI`.
 
 Phone Whisper lets you speak into most apps without switching keyboards. Tap the floating button, speak, tap again, and your text is inserted into the currently focused text field when the app exposes a standard Android input field.\
 
@@ -39,7 +49,7 @@ In addition to Danish language support, this fork includes crucial memory manage
 
 ### Easiest: download the APK
 
-Grab the latest APK from [GitHub Releases](https://github.com/kafkasl/phone-whisper/releases).
+Grab the latest APK from [this fork's GitHub Releases](https://github.com/ivkiwi/phone-whisper/releases).
 
 Open it on your phone, install it, then launch the app once to finish setup.
 
