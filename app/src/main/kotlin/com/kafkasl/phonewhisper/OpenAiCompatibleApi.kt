@@ -35,22 +35,24 @@ object OpenAiCompatibleApi {
             .build()
     }
 
-    fun parseModelsResponse(json: String): ModelListResult = try {
-        val obj = JSONObject(json)
-        if (obj.has("error")) {
-            return ModelListResult(null, obj.getJSONObject("error").getString("message"))
+    fun parseModelsResponse(json: String): ModelListResult {
+        return try {
+            val obj = JSONObject(json)
+            if (obj.has("error")) {
+                return ModelListResult(null, obj.getJSONObject("error").getString("message"))
+            }
+
+            val data = obj.optJSONArray("data") ?: return ModelListResult(null, "Unknown models response")
+            val models = (0 until data.length())
+                .mapNotNull { data.optJSONObject(it)?.optString("id")?.takeIf(String::isNotBlank) }
+                .distinct()
+                .sorted()
+
+            if (models.isEmpty()) ModelListResult(null, "No models in response")
+            else ModelListResult(models, null)
+        } catch (e: Exception) {
+            ModelListResult(null, e.message ?: "Parse error")
         }
-
-        val data = obj.optJSONArray("data") ?: return ModelListResult(null, "Unknown models response")
-        val models = (0 until data.length())
-            .mapNotNull { data.optJSONObject(it)?.optString("id")?.takeIf(String::isNotBlank) }
-            .distinct()
-            .sorted()
-
-        if (models.isEmpty()) ModelListResult(null, "No models in response")
-        else ModelListResult(models, null)
-    } catch (e: Exception) {
-        ModelListResult(null, e.message ?: "Parse error")
     }
 
     fun listModels(apiKey: String, apiBaseUrl: String, callback: (ModelListResult) -> Unit) {
