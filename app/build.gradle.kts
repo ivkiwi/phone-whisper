@@ -17,6 +17,13 @@ android {
         ndk { abiFilters += "arm64-v8a" }
     }
 
+    buildTypes {
+        debug {
+            applicationIdSuffix = ".openai"
+            versionNameSuffix = "-openai"
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
