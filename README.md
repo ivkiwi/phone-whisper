@@ -13,8 +13,8 @@ Phone Whisper lets you speak into most apps without switching keyboards. Tap the
 It supports:
 
 - **Local on-device transcription** with sherpa-onnx (including Danish via Roest)
-- **Cloud transcription** with OpenAI Whisper
-- **Optional cleanup** with OpenAI to fix punctuation and grammar
+- **Cloud transcription** with an OpenAI-compatible provider
+- **Optional cleanup** with a selected OpenAI-compatible chat model
 
 If you try it and it genuinely saves you time, please consider [sponsoring the original author, @kafkasl](https://github.com/sponsors/kafkasl).
 
@@ -82,7 +82,8 @@ make adb-install
 3. Enable the **Accessibility Service**
 4. Choose your transcription mode:
    - **Local**: download a model in the app
-   - **Cloud**: paste your OpenAI API key
+   - **Cloud transcription**: set a transcription API key/base URL, then choose a model fetched from that provider
+5. Optional cleanup uses its own API key/base URL/model, separate from cloud transcription
 
 Once setup is done, the floating button is ready.
 
@@ -97,10 +98,10 @@ It does **not** replace your keyboard. It does **not** run background automation
 Phone Whisper supports two modes:
 
 - **Local mode**: audio stays on-device
-- **Cloud mode**: audio is sent directly from your device to OpenAI's transcription API
-- **Optional cleanup**: transcript text is sent directly from your device to OpenAI's chat API
+- **Cloud mode**: audio is sent directly from your device to the configured transcription API
+- **Optional cleanup**: transcript text is sent directly from your device to the configured chat API
 
-I don't run a backend for this app. In cloud mode, requests go straight from your phone to OpenAI using your own API key.
+I don't run a backend for this app. In cloud mode, requests go straight from your phone to the configured OpenAI-compatible providers using your own API keys and selected models.
 
 Full policy: [PRIVACY.md](PRIVACY.md)
 
@@ -158,7 +159,7 @@ Once text is inserted into the native input box, Termux sends it to the terminal
 - Some apps may block paste or text injection
 - Some apps use custom input surfaces instead of standard Android text fields
 - Local models are large
-- Cloud mode requires your own OpenAI API key
+- Cloud mode requires your own API key for the configured OpenAI-compatible provider
 
 ## Support the project
 
@@ -179,4 +180,3 @@ In summary, the OpenRAIL-M license allows free access and commercial use, but in
 2. Under the custom terms of the CoRal project, you specifically agree not to:
    - Impersonate any person or entity or create synthetic speech emulating a specific natural person.
    - Use the model to detect or infer aspects/features of an identity of any natural persons (such as name, gender, age, health, etc.).
-

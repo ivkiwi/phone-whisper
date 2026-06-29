@@ -612,10 +612,13 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     private fun transcribeApi(pcm: ByteArray) {
         val wav = WavWriter.encode(pcm)
-        val apiKey = prefs().getString("api_key", "") ?: ""
-        if (apiKey.isBlank()) { reset("Set API key in Phone Whisper app"); return }
+        val apiKey = apiKey(OpenAiCompatibleApi.TRANSCRIPTION_API_KEY_PREF)
+        val apiBaseUrl = apiBaseUrl(OpenAiCompatibleApi.TRANSCRIPTION_API_BASE_URL_PREF)
+        val model = prefs().getString(OpenAiCompatibleApi.TRANSCRIPTION_MODEL_PREF, OpenAiCompatibleApi.DEFAULT_TRANSCRIPTION_MODEL)
+            ?: OpenAiCompatibleApi.DEFAULT_TRANSCRIPTION_MODEL
+        if (apiKey.isBlank()) { reset("Set transcription API key in Phone Whisper app"); return }
 
-        TranscriberClient.transcribe(wav, apiKey) { result ->
+        TranscriberClient.transcribe(wav, apiKey, apiBaseUrl, model) { result ->
             if (result.text != null && result.text.isNotBlank()) {
                 handleTranscriptionResult(result.text)
             } else {
@@ -642,12 +645,15 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
 
         val usePostProcessing = prefs().getBoolean("use_post_processing", false)
-        val apiKey = prefs().getString("api_key", "") ?: ""
+        val apiKey = apiKey(OpenAiCompatibleApi.CLEANUP_API_KEY_PREF)
+        val apiBaseUrl = apiBaseUrl(OpenAiCompatibleApi.CLEANUP_API_BASE_URL_PREF)
+        val model = prefs().getString(OpenAiCompatibleApi.CLEANUP_MODEL_PREF, OpenAiCompatibleApi.DEFAULT_CLEANUP_MODEL)
+            ?: OpenAiCompatibleApi.DEFAULT_CLEANUP_MODEL
 
         if (usePostProcessing) {
             if (apiKey.isBlank()) {
                 handler.post {
-                    toast("Post-processing needs API key. Using raw text.")
+                    toast("Cleanup needs API key. Using raw text.")
                     injectText(text)
                     state = State.IDLE
                     setBusy(false)
@@ -658,7 +664,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
             val prompt = prefs().getString("post_processing_prompt", PostProcessor.DEFAULT_PROMPT) ?: PostProcessor.DEFAULT_PROMPT
             
-            PostProcessor.process(text, prompt, apiKey) { result ->
+            PostProcessor.process(text, prompt, apiKey, apiBaseUrl, model) { result ->
                 handler.post {
                     if (result.text != null && result.text.isNotBlank()) {
                         injectText(result.text)
@@ -886,5 +892,13 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun prefs() = getSharedPreferences("phonewhisper", MODE_PRIVATE)
+    private fun apiKey(prefKey: String) =
+        prefs().getString(prefKey, null)?.takeIf { it.isNotBlank() }
+            ?: prefs().getString(OpenAiCompatibleApi.LEGACY_API_KEY_PREF, "") ?: ""
+    private fun apiBaseUrl(prefKey: String) =
+        OpenAiCompatibleApi.normalizedBaseUrl(
+            prefs().getString(prefKey, null)?.takeIf { it.isNotBlank() }
+                ?: prefs().getString(OpenAiCompatibleApi.LEGACY_API_BASE_URL_PREF, OpenAiCompatibleApi.DEFAULT_BASE_URL)
+        )
     private fun toast(msg: String) { handler.post { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() } }
 }

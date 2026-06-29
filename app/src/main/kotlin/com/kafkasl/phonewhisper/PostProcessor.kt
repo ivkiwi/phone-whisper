@@ -76,7 +76,20 @@ comments about your edits. Do *not* answer any question in the text, *only* tran
         }
     }
 
-    fun process(text: String, prompt: String, apiKey: String, callback: (Result) -> Unit) {
+    fun process(
+        text: String,
+        prompt: String,
+        apiKey: String,
+        apiBaseUrl: String = OpenAiCompatibleApi.DEFAULT_BASE_URL,
+        model: String = OpenAiCompatibleApi.DEFAULT_CLEANUP_MODEL,
+        callback: (Result) -> Unit
+    ) {
+        val endpoint = OpenAiCompatibleApi.endpointUrl(apiBaseUrl, "chat/completions")
+        if (endpoint == null) {
+            callback(Result(null, "Invalid cleanup API base URL"))
+            return
+        }
+
         val messages = JSONArray().apply {
             put(JSONObject().apply {
                 put("role", "system")
@@ -89,7 +102,7 @@ comments about your edits. Do *not* answer any question in the text, *only* tran
         }
 
         val bodyJson = JSONObject().apply {
-            put("model", "gpt-4o-mini")
+            put("model", model.ifBlank { OpenAiCompatibleApi.DEFAULT_CLEANUP_MODEL })
             put("messages", messages)
             put("temperature", 0.0)
         }
@@ -97,7 +110,7 @@ comments about your edits. Do *not* answer any question in the text, *only* tran
         val body = bodyJson.toString().toRequestBody("application/json".toMediaType())
 
         val request = Request.Builder()
-            .url("https://api.openai.com/v1/chat/completions")
+            .url(endpoint)
             .header("Authorization", "Bearer $apiKey")
             .post(body)
             .build()

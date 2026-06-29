@@ -27,7 +27,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusSubtitle: TextView
     private lateinit var audioRowSub: TextView
     private lateinit var accRowSub: TextView
-    private lateinit var keyRowSub: TextView
+    private lateinit var cloudConfigContainer: LinearLayout
+    private lateinit var cleanupConfigContainer: LinearLayout
+    private lateinit var transcriptionKeyRowSub: TextView
+    private lateinit var transcriptionBaseUrlRowSub: TextView
+    private lateinit var transcriptionModelRowSub: TextView
+    private lateinit var cleanupKeyRowSub: TextView
+    private lateinit var cleanupBaseUrlRowSub: TextView
+    private lateinit var cleanupModelRowSub: TextView
     private lateinit var promptRowSub: TextView
     private lateinit var promptRow: LinearLayout
     private lateinit var modelContainer: LinearLayout
@@ -91,13 +98,40 @@ class MainActivity : AppCompatActivity() {
             isChecked = isCloud
             isClickable = false
         }
-        val cloudRow = settingsRow("Use cloud transcription", "Requires OpenAI API key", cloudSwitch) {
+        val cloudRow = settingsRow("Use cloud transcription", "Requires OpenAI-compatible API key", cloudSwitch) {
             val newCloud = !cloudSwitch.isChecked
             prefs().edit().putBoolean("use_local", !newCloud).apply()
             cloudSwitch.isChecked = newCloud
             refresh()
         }
         root.addView(cloudRow)
+
+        cloudConfigContainer = vertical(0)
+        cloudConfigContainer.addView(sectionHeader("Cloud transcription"))
+        val transcriptionKeyRow = settingsRow("Transcription API key", "Tap to set") {
+            promptApiKey(OpenAiCompatibleApi.TRANSCRIPTION_API_KEY_PREF, "Transcription API key")
+        }
+        transcriptionKeyRowSub = transcriptionKeyRow.findViewWithTag("subtitle")
+        cloudConfigContainer.addView(transcriptionKeyRow)
+
+        val transcriptionBaseUrlRow = settingsRow("Transcription API base URL", "Tap to set") {
+            promptApiBaseUrl(OpenAiCompatibleApi.TRANSCRIPTION_API_BASE_URL_PREF, "Transcription API base URL")
+        }
+        transcriptionBaseUrlRowSub = transcriptionBaseUrlRow.findViewWithTag("subtitle")
+        cloudConfigContainer.addView(transcriptionBaseUrlRow)
+
+        val transcriptionModelRow = settingsRow("Transcription model", OpenAiCompatibleApi.DEFAULT_TRANSCRIPTION_MODEL) {
+            promptApiModel(
+                title = "Transcription model",
+                prefKey = OpenAiCompatibleApi.TRANSCRIPTION_MODEL_PREF,
+                defaultModel = OpenAiCompatibleApi.DEFAULT_TRANSCRIPTION_MODEL,
+                keyPref = OpenAiCompatibleApi.TRANSCRIPTION_API_KEY_PREF,
+                baseUrlPref = OpenAiCompatibleApi.TRANSCRIPTION_API_BASE_URL_PREF
+            )
+        }
+        transcriptionModelRowSub = transcriptionModelRow.findViewWithTag("subtitle")
+        cloudConfigContainer.addView(transcriptionModelRow)
+        root.addView(cloudConfigContainer)
 
         // Local Models section
         modelContainer = vertical(0)
@@ -128,13 +162,39 @@ class MainActivity : AppCompatActivity() {
             isChecked = isPostProcessing
             isClickable = false
         }
-        val postProcessRow = settingsRow("Cleanup transcript", "Uses OpenAI Chat API to fix grammar and punctuation", postProcessSwitch) {
+        val postProcessRow = settingsRow("Cleanup transcript", "Uses OpenAI-compatible Chat API to fix grammar and punctuation", postProcessSwitch) {
             val newVal = !postProcessSwitch.isChecked
             prefs().edit().putBoolean("use_post_processing", newVal).apply()
             postProcessSwitch.isChecked = newVal
             refresh()
         }
         root.addView(postProcessRow)
+
+        cleanupConfigContainer = vertical(0)
+        val cleanupKeyRow = settingsRow("Cleanup API key", "Tap to set") {
+            promptApiKey(OpenAiCompatibleApi.CLEANUP_API_KEY_PREF, "Cleanup API key")
+        }
+        cleanupKeyRowSub = cleanupKeyRow.findViewWithTag("subtitle")
+        cleanupConfigContainer.addView(cleanupKeyRow)
+
+        val cleanupBaseUrlRow = settingsRow("Cleanup API base URL", "Tap to set") {
+            promptApiBaseUrl(OpenAiCompatibleApi.CLEANUP_API_BASE_URL_PREF, "Cleanup API base URL")
+        }
+        cleanupBaseUrlRowSub = cleanupBaseUrlRow.findViewWithTag("subtitle")
+        cleanupConfigContainer.addView(cleanupBaseUrlRow)
+
+        val cleanupModelRow = settingsRow("Cleanup model", OpenAiCompatibleApi.DEFAULT_CLEANUP_MODEL) {
+            promptApiModel(
+                title = "Cleanup model",
+                prefKey = OpenAiCompatibleApi.CLEANUP_MODEL_PREF,
+                defaultModel = OpenAiCompatibleApi.DEFAULT_CLEANUP_MODEL,
+                keyPref = OpenAiCompatibleApi.CLEANUP_API_KEY_PREF,
+                baseUrlPref = OpenAiCompatibleApi.CLEANUP_API_BASE_URL_PREF
+            )
+        }
+        cleanupModelRowSub = cleanupModelRow.findViewWithTag("subtitle")
+        cleanupConfigContainer.addView(cleanupModelRow)
+        root.addView(cleanupConfigContainer)
 
         promptContainer = vertical(0)
         for (preset in promptPresets()) promptContainer.addView(buildPromptRow(preset))
@@ -145,13 +205,6 @@ class MainActivity : AppCompatActivity() {
         promptRowSub.maxLines = 2
         promptRowSub.ellipsize = android.text.TextUtils.TruncateAt.END
         root.addView(promptRow)
-
-        // --- Settings Section ---
-        root.addView(sectionHeader("Settings"))
-        
-        val keyRow = settingsRow("OpenAI API Key", "Tap to set") { promptApiKey() }
-        keyRowSub = keyRow.findViewWithTag("subtitle")
-        root.addView(keyRow)
 
         setContentView(ScrollView(this).apply {
             setBackgroundColor(attrColor(android.R.attr.colorBackground))
@@ -323,20 +376,31 @@ class MainActivity : AppCompatActivity() {
         val acc = WhisperAccessibilityService.instance != null
         val useLocal = prefs().getBoolean("use_local", true)
         val usePostProcessing = prefs().getBoolean("use_post_processing", false)
-        val hasKey = !prefs().getString("api_key", "").isNullOrBlank()
+        val hasTranscriptionKey = currentApiKey(OpenAiCompatibleApi.TRANSCRIPTION_API_KEY_PREF).isNotBlank()
+        val hasCleanupKey = currentApiKey(OpenAiCompatibleApi.CLEANUP_API_KEY_PREF).isNotBlank()
         val hasModel = LocalTranscriber.availableModels(this).isNotEmpty()
 
         audioRowSub.text = if (audio) "Granted" else "Tap to grant permission"
         accRowSub.text = if (acc) "Enabled" else "Tap to enable in settings"
 
         modelContainer.visibility = if (useLocal) View.VISIBLE else View.GONE
+        cloudConfigContainer.visibility = if (useLocal) View.GONE else View.VISIBLE
+        cleanupConfigContainer.visibility = if (usePostProcessing) View.VISIBLE else View.GONE
         promptContainer.visibility = if (usePostProcessing) View.VISIBLE else View.GONE
         promptRow.visibility = if (usePostProcessing) View.VISIBLE else View.GONE
 
-        val apiKey = prefs().getString("api_key", "") ?: ""
-        keyRowSub.text = if (apiKey.isBlank()) "Tap to set" 
-                         else if (apiKey.length > 7) "sk-...${apiKey.takeLast(4)}" 
-                         else "sk-...***"
+        transcriptionKeyRowSub.text = maskedKey(currentApiKey(OpenAiCompatibleApi.TRANSCRIPTION_API_KEY_PREF))
+        transcriptionBaseUrlRowSub.text = currentApiBaseUrl(OpenAiCompatibleApi.TRANSCRIPTION_API_BASE_URL_PREF)
+        transcriptionModelRowSub.text = currentApiModel(
+            OpenAiCompatibleApi.TRANSCRIPTION_MODEL_PREF,
+            OpenAiCompatibleApi.DEFAULT_TRANSCRIPTION_MODEL
+        )
+        cleanupKeyRowSub.text = maskedKey(currentApiKey(OpenAiCompatibleApi.CLEANUP_API_KEY_PREF))
+        cleanupBaseUrlRowSub.text = currentApiBaseUrl(OpenAiCompatibleApi.CLEANUP_API_BASE_URL_PREF)
+        cleanupModelRowSub.text = currentApiModel(
+            OpenAiCompatibleApi.CLEANUP_MODEL_PREF,
+            OpenAiCompatibleApi.DEFAULT_CLEANUP_MODEL
+        )
 
         val prompt = currentPrompt()
         promptRowSub.text = prompt
@@ -349,8 +413,8 @@ class MainActivity : AppCompatActivity() {
 
         // Ready logic
         val localReady = useLocal && hasModel
-        val cloudReady = !useLocal && hasKey
-        val postReady = !usePostProcessing || hasKey
+        val cloudReady = !useLocal && hasTranscriptionKey
+        val postReady = !usePostProcessing || hasCleanupKey
         val ready = audio && acc && (localReady || cloudReady) && postReady
 
         statusSubtitle.text = if (ready) "Ready — tap the overlay dot to dictate" else "Setup required"
@@ -360,20 +424,77 @@ class MainActivity : AppCompatActivity() {
         refreshPromptRows()
     }
 
-    private fun promptApiKey() {
+    private fun promptApiKey(prefKey: String, title: String) {
         val input = EditText(this).apply {
-            hint = "sk-..."
-            setText(prefs().getString("api_key", ""))
+            hint = "API key"
+            setText(currentApiKey(prefKey))
         }
         android.app.AlertDialog.Builder(this)
-            .setTitle("OpenAI API Key")
+            .setTitle(title)
             .setView(input.apply { setPadding(dp(24), dp(8), dp(24), dp(8)) })
             .setPositiveButton("Save") { _, _ ->
-                prefs().edit().putString("api_key", input.text.toString().trim()).apply()
+                prefs().edit().putString(prefKey, input.text.toString().trim()).apply()
                 refresh()
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun promptApiBaseUrl(prefKey: String, title: String) {
+        val input = EditText(this).apply {
+            hint = OpenAiCompatibleApi.DEFAULT_BASE_URL
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setText(currentApiBaseUrl(prefKey))
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(input.apply { setPadding(dp(24), dp(8), dp(24), dp(8)) })
+            .setPositiveButton("Save") { _, _ ->
+                prefs().edit()
+                    .putString(prefKey, OpenAiCompatibleApi.normalizedBaseUrl(input.text.toString()))
+                    .apply()
+                refresh()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun promptApiModel(
+        title: String,
+        prefKey: String,
+        defaultModel: String,
+        keyPref: String,
+        baseUrlPref: String
+    ) {
+        val apiKey = currentApiKey(keyPref)
+        if (apiKey.isBlank()) {
+            toast("Set API key first")
+            return
+        }
+
+        toast("Loading models...")
+        OpenAiCompatibleApi.listModels(apiKey, currentApiBaseUrl(baseUrlPref)) { result ->
+            runOnUiThread {
+                val models = result.models
+                if (models == null) {
+                    toast("Models error: ${result.error ?: "unknown"}")
+                    return@runOnUiThread
+                }
+
+                val current = currentApiModel(prefKey, defaultModel)
+                val items = models.toTypedArray()
+                val checked = models.indexOf(current)
+                android.app.AlertDialog.Builder(this)
+                    .setTitle(title)
+                    .setSingleChoiceItems(items, checked) { dialog, which ->
+                        prefs().edit().putString(prefKey, items[which]).apply()
+                        dialog.dismiss()
+                        refresh()
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+        }
     }
 
     private fun promptPostProcessing() {
@@ -456,6 +577,21 @@ class MainActivity : AppCompatActivity() {
 
     private fun currentPrompt() = prefs().getString("post_processing_prompt", PostProcessor.DEFAULT_PROMPT) ?: PostProcessor.DEFAULT_PROMPT
     private fun customPrompt() = prefs().getString("custom_post_processing_prompt", PostProcessor.DEFAULT_PROMPT) ?: PostProcessor.DEFAULT_PROMPT
+    private fun currentApiKey(prefKey: String) =
+        prefs().getString(prefKey, null)?.takeIf { it.isNotBlank() }
+            ?: prefs().getString(OpenAiCompatibleApi.LEGACY_API_KEY_PREF, "") ?: ""
+    private fun currentApiBaseUrl(prefKey: String) =
+        OpenAiCompatibleApi.normalizedBaseUrl(
+            prefs().getString(prefKey, null)?.takeIf { it.isNotBlank() }
+                ?: prefs().getString(OpenAiCompatibleApi.LEGACY_API_BASE_URL_PREF, OpenAiCompatibleApi.DEFAULT_BASE_URL)
+        )
+    private fun currentApiModel(prefKey: String, defaultModel: String) =
+        prefs().getString(prefKey, defaultModel)?.ifBlank { defaultModel } ?: defaultModel
+    private fun maskedKey(apiKey: String) = when {
+        apiKey.isBlank() -> "Tap to set"
+        apiKey.length <= 4 -> "***"
+        else -> "***${apiKey.takeLast(4)}"
+    }
 
     private fun customPromptSummary(): String {
         val prompt = customPrompt()
