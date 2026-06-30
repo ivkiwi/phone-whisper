@@ -20,7 +20,7 @@ data class Model(
 )
 
 /** A single file to download from a Hugging Face repo, placed flat as [local] in the model dir. */
-data class HfFile(val remote: String, val local: String)
+data class HfFile(val remote: String, val local: String, val sizeBytes: Long? = null)
 
 /** A Hugging Face model source: a set of individual files downloaded flat into the model dir. */
 data class HfSource(
@@ -41,15 +41,15 @@ private val VOSK_STREAMING_FILES = listOf(
 // GigaAM v3 (Smirnov75/GigaAM-v3-sherpa-onnx). Remote names are remapped to the flat
 // model.onnx / encoder/decoder/joiner + tokens.txt layout our detector expects.
 private val GIGAAM_V3_E2E_CTC_FILES = listOf(
-    HfFile("gigaam_v3_e2e_ctc_int8.onnx", "model.int8.onnx"),
-    HfFile("gigaam_v3_e2e_ctc_tokens.txt", "tokens.txt"),
+    HfFile("gigaam_v3_e2e_ctc_int8.onnx", "model.int8.onnx", 319_869_121),
+    HfFile("gigaam_v3_e2e_ctc_tokens.txt", "tokens.txt", 2_006),
 )
 
 private val GIGAAM_V3_E2E_RNNT_FILES = listOf(
-    HfFile("gigaam_v3_e2e_rnnt_encoder_int8.onnx", "encoder.int8.onnx"),
-    HfFile("gigaam_v3_e2e_rnnt_decoder.onnx", "decoder.onnx"),
-    HfFile("gigaam_v3_e2e_rnnt_joint.onnx", "joiner.onnx"),
-    HfFile("gigaam_v3_e2e_rnnt_tokens.txt", "tokens.txt"),
+    HfFile("gigaam_v3_e2e_rnnt_encoder_int8.onnx", "encoder.int8.onnx", 318_995_997),
+    HfFile("gigaam_v3_e2e_rnnt_decoder.onnx", "decoder.onnx", 4_600_058),
+    HfFile("gigaam_v3_e2e_rnnt_joint.onnx", "joiner.onnx", 2_712_896),
+    HfFile("gigaam_v3_e2e_rnnt_tokens.txt", "tokens.txt", 13_353),
 )
 
 val MODEL_CATALOG = listOf(
@@ -116,8 +116,19 @@ object ModelDownloader {
     fun modelDir(ctx: Context, model: Model) =
         File(ctx.filesDir, "models/${model.archive}")
 
-    fun isInstalled(ctx: Context, model: Model) =
-        modelDir(ctx, model).exists()
+    fun isInstalled(ctx: Context, model: Model): Boolean {
+        val dir = modelDir(ctx, model)
+        val hf = model.hf ?: return dir.exists()
+        return isCompleteHfModelDir(dir, hf)
+    }
+
+    internal fun isCompleteHfModelDir(dir: File, hf: HfSource): Boolean {
+        if (!dir.isDirectory) return false
+        return hf.files.all { f ->
+            val file = File(dir, f.local)
+            file.isFile && (f.sizeBytes == null || file.length() == f.sizeBytes)
+        }
+    }
 
     /** Download (and extract, if archived) a model. Callbacks fire on background thread. */
     fun download(ctx: Context, model: Model, onState: (DownloadState) -> Unit) {
@@ -162,10 +173,14 @@ object ModelDownloader {
             for (f in hf.files) {
                 val dest = File(tmpDir, f.local)
                 dest.parentFile?.mkdirs()
-                downloadTo(hf.url(f), dest) { delta ->
+                val bytes = downloadTo(hf.url(f), dest) { delta ->
                     done += delta
                     if (total > 0)
                         onState(DownloadState.Downloading((done.toFloat() / total).coerceIn(0f, 1f)))
+                }
+                val expected = f.sizeBytes
+                if (expected != null && bytes != expected) {
+                    throw IOException("Incomplete download for ${f.local}: $bytes/$expected bytes")
                 }
             }
             onState(DownloadState.Extracting) // brief "finishing" state while we swap into place
@@ -178,20 +193,28 @@ object ModelDownloader {
     }
 
     /** Download a single URL to [dest], invoking [onDelta] with each chunk's byte count. */
-    private fun downloadTo(url: String, dest: File, onDelta: (Int) -> Unit) {
+    private fun downloadTo(url: String, dest: File, onDelta: (Int) -> Unit): Long {
         client.newCall(Request.Builder().url(url).build()).execute().use { response ->
             if (!response.isSuccessful) throw IOException("HTTP ${response.code} for $url")
             val body = response.body ?: throw IOException("Empty response for $url")
+            val expected = body.contentLength()
+            var written = 0L
             body.byteStream().use { src ->
                 FileOutputStream(dest).use { dst ->
                     val buf = ByteArray(16384)
                     var n: Int
                     while (src.read(buf).also { n = it } != -1) {
                         dst.write(buf, 0, n)
+                        written += n
                         onDelta(n)
                     }
                 }
             }
+            if (expected >= 0 && written != expected) {
+                dest.delete()
+                throw IOException("Incomplete download for ${dest.name}: $written/$expected bytes")
+            }
+            return written
         }
     }
 

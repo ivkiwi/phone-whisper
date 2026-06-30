@@ -54,6 +54,18 @@ class ModelDownloaderTest {
         })
     }
 
+    @Test fun `rejects incomplete Hugging Face model dirs`() {
+        withTempDir { tmp ->
+            val hf = HfSource("test/repo", files = listOf(HfFile("remote.onnx", "model.onnx", 4)))
+            File(tmp, "model.onnx").writeText("abc")
+
+            assertFalse(ModelDownloader.isCompleteHfModelDir(tmp, hf))
+
+            File(tmp, "model.onnx").writeText("abcd")
+            assertTrue(ModelDownloader.isCompleteHfModelDir(tmp, hf))
+        }
+    }
+
     // -- helpers --
 
     private fun withTempDir(block: (File) -> Unit) {
