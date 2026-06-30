@@ -20,7 +20,6 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.radiobutton.MaterialRadioButton
-import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
@@ -406,7 +405,7 @@ class MainActivity : AppCompatActivity() {
         promptRowSub.text = prompt
 
         val cur = prefs().getString("model_name", "") ?: ""
-        if (cur.isBlank() || !File(filesDir, "models/$cur").exists()) {
+        if (cur.isBlank() || !isLocalModelInstalled(this, cur)) {
             MODEL_CATALOG.firstOrNull { ModelDownloader.isInstalled(this, it) }
                 ?.let { selectModel(it.archive) }
         }

@@ -171,7 +171,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
         try {
             val modelName = prefs().getString("model_name", "") ?: ""
-            val transcriber = if (modelName.isBlank()) {
+            val transcriber = if (modelName.isBlank() || !isLocalModelInstalled(this, modelName)) {
                 // Auto-detect first available model
                 val models = LocalTranscriber.availableModels(this)
                 if (models.isNotEmpty()) {

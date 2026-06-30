@@ -155,7 +155,7 @@ class LocalTranscriber private constructor(
             val modelsDir = File(ctx.filesDir, "models")
             if (!modelsDir.exists()) return emptyList()
             return modelsDir.listFiles()
-                ?.filter { it.isDirectory && !it.name.startsWith(".") }
+                ?.filter { it.isDirectory && !it.name.startsWith(".") && isLocalModelInstalled(ctx, it.name) }
                 ?.map { it.name } ?: emptyList()
         }
 

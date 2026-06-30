@@ -107,6 +107,15 @@ sealed class DownloadState {
     data class Error(val message: String) : DownloadState()
 }
 
+fun isLocalModelInstalled(ctx: Context, archive: String): Boolean {
+    val model = MODEL_CATALOG.firstOrNull { it.archive == archive }
+    return if (model != null) {
+        ModelDownloader.isInstalled(ctx, model)
+    } else {
+        File(ctx.filesDir, "models/$archive").exists()
+    }
+}
+
 object ModelDownloader {
     private const val BASE_URL =
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
