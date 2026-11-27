@@ -27,8 +27,10 @@ data class HfSource(
     val repo: String,
     val revision: String = "main",
     val files: List<HfFile>,
+    /** Override to fetch the same flat file set from elsewhere, e.g. a GitHub release. */
+    val baseUrl: String = "https://huggingface.co/$repo/resolve/$revision",
 ) {
-    fun url(f: HfFile) = "https://huggingface.co/$repo/resolve/$revision/${f.remote}"
+    fun url(f: HfFile) = "$baseUrl/${f.remote}"
 }
 
 private val VOSK_STREAMING_FILES = listOf(
@@ -52,6 +54,15 @@ private val GIGAAM_V3_E2E_RNNT_FILES = listOf(
     HfFile("gigaam_v3_e2e_rnnt_tokens.txt", "tokens.txt", 13_353),
 )
 
+// GigaAM v4 (ai-sage/GigaAM-v4, rnnt revision, e2e head) converted for sherpa-onnx; there is
+// no sherpa conversion on Hugging Face yet, so the files live in this fork's models release.
+private val GIGAAM_V4_E2E_RNNT_FILES = listOf(
+    HfFile("gigaam_v4_e2e_rnnt_encoder_int8.onnx", "encoder.int8.onnx", 239_885_452),
+    HfFile("gigaam_v4_e2e_rnnt_decoder.onnx", "decoder.onnx", 4_600_129),
+    HfFile("gigaam_v4_e2e_rnnt_joint.onnx", "joiner.onnx", 2_712_897),
+    HfFile("gigaam_v4_e2e_rnnt_tokens.txt", "tokens.txt", 9_982),
+)
+
 val MODEL_CATALOG = listOf(
     Model(
         "Russian (Vosk small, streaming)",
@@ -69,6 +80,17 @@ val MODEL_CATALOG = listOf(
         hf = HfSource("alphacep/vosk-model-streaming-ru", files = VOSK_STREAMING_FILES),
     ),
     Model(
+        "Russian + English (GigaAM v4 RNN-T)",
+        "gigaam-v4-e2e-rnnt-ru-en",
+        248,
+        "★★★★★ Offline Russian/English (punctuation, most accurate)",
+        hf = HfSource(
+            "ivkiwi/phone-whisper",
+            files = GIGAAM_V4_E2E_RNNT_FILES,
+            baseUrl = "https://github.com/ivkiwi/phone-whisper/releases/download/models-gigaam-v4",
+        ),
+    ),
+    Model(
         "Russian (GigaAM v3 CTC)",
         "gigaam-v3-e2e-ctc-ru",
         319,
@@ -79,7 +101,7 @@ val MODEL_CATALOG = listOf(
         "Russian (GigaAM v3 RNN-T)",
         "gigaam-v3-e2e-rnnt-ru",
         326,
-        "★★★★★ Offline Russian (punctuation, most accurate)",
+        "★★★★★ Offline Russian (punctuation)",
         hf = HfSource("Smirnov75/GigaAM-v3-sherpa-onnx", files = GIGAAM_V3_E2E_RNNT_FILES),
     ),
     Model(
@@ -202,7 +224,7 @@ object ModelDownloader {
     }
 
     /** Download a single URL to [dest], invoking [onDelta] with each chunk's byte count. */
-    private fun downloadTo(url: String, dest: File, onDelta: (Int) -> Unit): Long {
+    internal fun downloadTo(url: String, dest: File, onDelta: (Int) -> Unit): Long {
         client.newCall(Request.Builder().url(url).build()).execute().use { response ->
             if (!response.isSuccessful) throw IOException("HTTP ${response.code} for $url")
             val body = response.body ?: throw IOException("Empty response for $url")

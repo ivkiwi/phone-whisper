@@ -11,7 +11,8 @@ android {
         applicationId = "com.kafkasl.phonewhisper"
         minSdk = 30
         targetSdk = 34
-        versionCode = 4
+        // CI run number: every GitHub build is an upgrade, matching its `build-<n>` release tag.
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toInt() ?: 4
         versionName = "0.4.1"
 
         ndk { abiFilters += "arm64-v8a" }

@@ -20,10 +20,15 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.radiobutton.MaterialRadioButton
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var statusSubtitle: TextView
+    private lateinit var updateRowSub: TextView
+    private var pendingUpdate: AppUpdate? = null
+    private var downloadedApk: File? = null
+    private var updateBusy = false
     private lateinit var audioRowSub: TextView
     private lateinit var accRowSub: TextView
     private lateinit var cloudConfigContainer: LinearLayout
@@ -71,6 +76,10 @@ class MainActivity : AppCompatActivity() {
         val statusRow = settingsRow("Status", "Checking...")
         statusSubtitle = statusRow.findViewWithTag("subtitle")
         root.addView(statusRow)
+
+        val updateRow = settingsRow("App updates", "Checking...") { onUpdateTap() }
+        updateRowSub = updateRow.findViewWithTag("subtitle")
+        root.addView(updateRow)
 
         // --- Setup Section ---
         root.addView(sectionHeader("Setup"))
@@ -215,11 +224,70 @@ class MainActivity : AppCompatActivity() {
         }
         
         refresh()
+        checkForUpdate()
     }
 
     override fun onResume() { super.onResume(); refresh() }
     override fun onRequestPermissionsResult(c: Int, p: Array<String>, r: IntArray) {
         super.onRequestPermissionsResult(c, p, r); refresh()
+    }
+
+    // --- App updates (GitHub release builds) ---
+
+    private fun checkForUpdate() {
+        val current = AppUpdater.installedVersionCode(this)
+        updateBusy = true
+        updateRowSub.text = "Build $current · checking..."
+        Thread {
+            val result = runCatching { AppUpdater.check(current) }
+            runOnUiThread {
+                updateBusy = false
+                val update = result.getOrNull()
+                pendingUpdate = update
+                updateRowSub.text = when {
+                    result.isFailure -> "Build $current · check failed, tap to retry"
+                    update != null -> "Build ${update.versionCode} available · tap to install"
+                    else -> "Build $current · up to date"
+                }
+            }
+        }.start()
+    }
+
+    private fun onUpdateTap() {
+        if (updateBusy) return
+        val update = pendingUpdate ?: return checkForUpdate()
+        downloadedApk?.takeIf { it.isFile }?.let { installUpdate(update, it); return }
+
+        updateBusy = true
+        updateRowSub.text = "Downloading build ${update.versionCode}..."
+        Thread {
+            var lastPct = -1
+            val result = runCatching {
+                AppUpdater.download(this, update) { p ->
+                    val pct = (p * 100).toInt()
+                    if (pct != lastPct) {
+                        lastPct = pct
+                        runOnUiThread { updateRowSub.text = "Downloading build ${update.versionCode}: $pct%" }
+                    }
+                }
+            }
+            runOnUiThread {
+                updateBusy = false
+                result.onSuccess { apk ->
+                    downloadedApk = apk
+                    installUpdate(update, apk)
+                }.onFailure { e ->
+                    updateRowSub.text = "Download failed: ${e.message} · tap to retry"
+                }
+            }
+        }.start()
+    }
+
+    private fun installUpdate(update: AppUpdate, apk: File) {
+        updateRowSub.text = if (AppUpdater.install(this, apk))
+            "Build ${update.versionCode} downloaded · tap to install"
+        else
+            "Allow installs from Phone Whisper, then tap again"
     }
 
     // --- Model Rows ---
