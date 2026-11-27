@@ -41,7 +41,7 @@ class ModelDownloaderTest {
     }
 
     @Test fun `catalog has expected structure`() {
-        assertEquals(9, MODEL_CATALOG.size)
+        assertEquals(10, MODEL_CATALOG.size)
         assertTrue(MODEL_CATALOG.any { it.recommended })
         assertTrue(MODEL_CATALOG.all { it.sizeMb > 0 })
         assertTrue(MODEL_CATALOG.all { it.archive.isNotBlank() })
@@ -52,6 +52,16 @@ class ModelDownloaderTest {
         assertTrue(MODEL_CATALOG.all {
             it.hf != null || it.url != null || it.archive.startsWith("sherpa-onnx-")
         })
+        val v4 = MODEL_CATALOG.first { it.archive == "gigaam-v4-e2e-rnnt-ru-en" }.hf!!
+        assertEquals(
+            "https://github.com/ivkiwi/phone-whisper/releases/download/models-gigaam-v4/gigaam_v4_e2e_rnnt_tokens.txt",
+            v4.url(v4.files.last()),
+        )
+        val v3 = MODEL_CATALOG.first { it.archive == "gigaam-v3-e2e-rnnt-ru" }.hf!!
+        assertEquals(
+            "https://huggingface.co/Smirnov75/GigaAM-v3-sherpa-onnx/resolve/main/gigaam_v3_e2e_rnnt_tokens.txt",
+            v3.url(v3.files.last()),
+        )
     }
 
     @Test fun `rejects incomplete Hugging Face model dirs`() {
