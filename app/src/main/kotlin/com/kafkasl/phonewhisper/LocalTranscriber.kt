@@ -127,10 +127,12 @@ class LocalTranscriber private constructor(
                 windowSize = VAD_WINDOW,
                 preRollWindows = sampleRate * 6 / 10 / VAD_WINDOW, // ~0.6 s before speech onset
             ) { window ->
-                v.acceptWaveform(window)
-                val speech = v.isSpeechDetected()
-                v.clear() // segments are not used; keep the native queue empty
-                speech
+                synchronized(v) {
+                    v.acceptWaveform(window)
+                    val speech = v.isSpeechDetected()
+                    v.clear() // segments are not used; keep the native queue empty
+                    speech
+                }
             }
         }
         private val events = ArrayList<VadGate.Event>()
@@ -168,10 +170,11 @@ class LocalTranscriber private constructor(
 
         private val worker = Thread {
             try {
-                vad?.reset()
+                vad?.let { synchronized(it) { it.reset() } }
                 while (true) {
                     val chunk = queue.take()
                     if (chunk === POISON) break
+                    if (aborted) break // abandoned: don't touch the shared Vad or decoder any more
                     if (chunk === CUT) {
                         finalizeSegment(forced = true)
                         continue
@@ -266,19 +269,22 @@ class LocalTranscriber private constructor(
         private val speech = ArrayList<FloatArray>()
         private var speechSamples = 0
         private val gate = VadGate(VAD_WINDOW, preRollWindows = sampleRate * 3 / 10 / VAD_WINDOW) { window ->
-            vad.acceptWaveform(window)
-            val s = vad.isSpeechDetected()
-            vad.clear()
-            s
+            synchronized(vad) {
+                vad.acceptWaveform(window)
+                val s = vad.isSpeechDetected()
+                vad.clear()
+                s
+            }
         }
         private val events = ArrayList<VadGate.Event>()
 
         private val worker = Thread {
             try {
-                vad.reset()
+                synchronized(vad) { vad.reset() }
                 while (true) {
                     val chunk = queue.take()
                     if (chunk === POISON) break
+                    if (aborted) break // abandoned: don't touch the shared Vad or decoder any more
                     if (chunk === CUT) { decodePhrase(forced = true); continue }
                     events.clear()
                     gate.accept(chunk, events)

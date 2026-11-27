@@ -21,6 +21,19 @@ class RemoteDictationService : Service() {
 
     private var client: Messenger? = null
 
+    /** Cancels an external utterance whose client stopped sending audio (stalled or gone). */
+    private val audioWatchdog = Runnable {
+        if (DictationEngine.isOwner(listener) && DictationEngine.state == DictationEngine.State.RECORDING) {
+            ImeLog.add("remote: no audio for ${AUDIO_IDLE_MS / 1000}s, cancelling")
+            DictationEngine.cancel(listener)
+        }
+    }
+
+    private fun armWatchdog() {
+        handler.removeCallbacks(audioWatchdog)
+        handler.postDelayed(audioWatchdog, AUDIO_IDLE_MS)
+    }
+
     private val listener = object : DictationEngine.Listener {
         override fun onStateChanged(state: DictationEngine.State) =
             send(P.MSG_STATE) { putString(P.KEY_STATE, state.name) }
@@ -54,6 +67,7 @@ class RemoteDictationService : Service() {
                         role = if (data.getString(P.KEY_ROLE) == P.ROLE_PTT) DictationEngine.Role.PTT else DictationEngine.Role.TAP,
                     )
                     if (result == DictationEngine.StartResult.STARTED) {
+                        armWatchdog()
                         send(P.MSG_STARTED) { putBoolean(P.KEY_LIVE, DictationEngine.isLive) }
                     } else {
                         send(P.MSG_ERROR) {
@@ -63,6 +77,7 @@ class RemoteDictationService : Service() {
                     }
                 }
                 P.MSG_AUDIO -> if (DictationEngine.isOwner(listener)) {
+                    armWatchdog()
                     data.getByteArray(P.KEY_PCM)?.let { DictationEngine.feedExternal(it) }
                 }
                 P.MSG_STOP -> if (DictationEngine.isOwner(listener)) DictationEngine.stopAndTranscribe()
@@ -138,6 +153,10 @@ class RemoteDictationService : Service() {
         } catch (_: RemoteException) {
             // Client died; the unbind will clean up.
         }
+    }
+
+    private companion object {
+        const val AUDIO_IDLE_MS = 10_000L
     }
 
     private fun DictationEngine.Notice.wire(): String = when (this) {

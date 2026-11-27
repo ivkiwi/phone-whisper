@@ -53,11 +53,13 @@ class WhisperRecognitionService : RecognitionService() {
 
         override fun onLivePartial(text: String) {
             partial = text
+            if (text.isNotBlank()) heardSpeech()
             sendPartial()
         }
 
         override fun onLiveSegment(text: String, forced: Boolean) {
             if (text.isNotBlank()) {
+                heardSpeech()
                 if (committed.isNotEmpty()) committed.append(' ')
                 committed.append(text.trim())
             }
@@ -192,7 +194,16 @@ class WhisperRecognitionService : RecognitionService() {
             val buf = ByteArray(CHUNK_BYTES)
             while (record === rec) {
                 val n = rec.read(buf, 0, buf.size)
-                if (n < 0) break
+                if (n < 0) {
+                    // Mic died (e.g. audioserver restart): end the session instead of hanging.
+                    main.post {
+                        if (record !== rec) return@post
+                        record = null
+                        DictationEngine.cancel(listener)
+                        finishWith { it.error(SpeechRecognizer.ERROR_AUDIO) }
+                    }
+                    break
+                }
                 if (n == 0) continue
                 val pcm = buf.copyOf(n)
                 val rms = rms(pcm)
@@ -215,9 +226,7 @@ class WhisperRecognitionService : RecognitionService() {
         val level = (rms * 8.5).coerceIn(0.0, 1.0)
         val now = System.currentTimeMillis()
         if (level > SPEECH_LEVEL) {
-            if (!speechSeen) safe { cb.beginningOfSpeech() }
-            speechSeen = true
-            quietSince = 0
+            heardSpeech()
         } else if (speechSeen && level < QUIET_LEVEL) {
             if (quietSince == 0L) quietSince = now
             else if (now - quietSince >= silenceLimitMs) stopRecording()
@@ -229,6 +238,13 @@ class WhisperRecognitionService : RecognitionService() {
             DictationEngine.cancel(listener)
             finishWith { it.error(SpeechRecognizer.ERROR_SPEECH_TIMEOUT) }
         }
+    }
+
+    /** Loud enough audio or recognised text: quiet speakers count too. */
+    private fun heardSpeech() {
+        if (!speechSeen) callback?.let { cb -> safe { cb.beginningOfSpeech() } }
+        speechSeen = true
+        quietSince = 0
     }
 
     private fun stopRecording() {

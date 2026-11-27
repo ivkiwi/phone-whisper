@@ -63,11 +63,17 @@ object AppUpdater {
             val apk = apkFile(ctx, update)
             val dir = apk.parentFile!!
             val part = File(dir, "${apk.name}.part")
-            dir.listFiles()?.filter { it != part }?.forEach { it.deleteRecursively() } // keep a partial of this build to resume
+            // Keep this build's partial (and its .etag) to resume; drop everything else.
+            dir.listFiles()?.filterNot { it.name.startsWith(part.name) }?.forEach { it.deleteRecursively() }
             dir.mkdirs()
             var done = part.length()
             ModelDownloader.downloadWithRetry(update.apkUrl, part) { delta -> done += delta; onProgress(done) }
             if (!part.renameTo(apk)) throw IOException("Failed to save ${apk.name}")
+            val code = ctx.packageManager.getPackageArchiveInfo(apk.path, 0)?.longVersionCode
+            if (code != update.versionCode) {
+                apk.delete()
+                throw IOException("Downloaded file is not build ${update.versionCode}")
+            }
             return apk
         } finally {
             downloading.set(false)

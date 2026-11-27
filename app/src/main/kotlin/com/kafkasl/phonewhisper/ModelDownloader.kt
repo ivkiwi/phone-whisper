@@ -163,6 +163,11 @@ object ModelDownloader {
 
     /** Download (and extract, if archived) a model. Callbacks fire on background thread. */
     fun download(ctx: Context, model: Model, onState: (DownloadState) -> Unit) {
+        // Two writers would append to the same resumable partial.
+        if (!inFlight.add(model.archive)) {
+            onState(DownloadState.Error("Already downloading. Keep this screen open."))
+            return
+        }
         Thread {
             try {
                 val hf = model.hf
@@ -187,6 +192,8 @@ object ModelDownloader {
                 onState(DownloadState.Done)
             } catch (e: Exception) {
                 onState(DownloadState.Error(friendlyError(e)))
+            } finally {
+                inFlight.remove(model.archive)
             }
         }.start()
     }
@@ -236,7 +243,7 @@ object ModelDownloader {
             if (finalDir.exists()) finalDir.deleteRecursively()
             if (!tmpDir.renameTo(finalDir)) throw IOException("Failed to install model into ${finalDir.name}")
         } catch (e: IOException) {
-            if (e.message?.startsWith("HTTP 4") == true) tmpDir.deleteRecursively() // wrong file: start over
+            if (isPermanent(e)) tmpDir.deleteRecursively() // wrong file: start over
             throw e
         }
     }
@@ -252,12 +259,18 @@ object ModelDownloader {
             try {
                 return downloadTo(url, dest, onDelta)
             } catch (e: IOException) {
-                if (e.message?.startsWith("HTTP 4") == true) throw e // not transient
+                if (isPermanent(e)) throw e
                 lastError = e
             }
         }
         throw lastError ?: IOException("Download failed")
     }
+
+    private val inFlight: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
+
+    /** Missing or forbidden files won't appear on retry; 408/429/5xx and network drops may. */
+    private fun isPermanent(e: IOException) =
+        Regex("^HTTP (401|403|404|410)\\b").containsMatchIn(e.message.orEmpty())
 
     private const val ATTEMPTS = 5
     private val RETRY_DELAYS_MS = longArrayOf(2_000, 4_000, 8_000, 16_000, 30_000)
@@ -265,15 +278,31 @@ object ModelDownloader {
     /**
      * Download [url] to [dest], resuming after the bytes already in [dest] (HTTP Range);
      * [onDelta] gets each new chunk's byte count. Returns the file's final length.
+     * A partial is resumed only with If-Range on the ETag it was written with (kept in
+     * `<dest>.etag`), so a file replaced on the server is downloaded again from the start.
      */
     private fun downloadTo(url: String, dest: File, onDelta: (Int) -> Unit): Long {
-        val have = if (dest.exists()) dest.length() else 0L
-        val request = Request.Builder().url(url).apply { if (have > 0) header("Range", "bytes=$have-") }.build()
+        val etagFile = File(dest.path + ".etag")
+        val etag = etagFile.takeIf { it.isFile }?.readText()
+        val have = if (etag != null && dest.exists()) dest.length() else 0L
+        val request = Request.Builder().url(url).apply {
+            if (have > 0) header("Range", "bytes=$have-").header("If-Range", etag!!)
+        }.build()
         client.newCall(request).execute().use { response ->
-            if (response.code == 416 && have > 0) return have // already complete
+            if (response.code == 416 && have > 0) {
+                // "Content-Range: bytes */<total>": complete only if the partial is the whole file.
+                if (response.header("Content-Range")?.substringAfter("*/")?.toLongOrNull() == have) {
+                    etagFile.delete()
+                    return have
+                }
+                dest.delete()
+                etagFile.delete()
+                throw IOException("Partial ${dest.name} does not match the server; restarting")
+            }
             if (!response.isSuccessful) throw IOException("HTTP ${response.code} for $url")
             val body = response.body ?: throw IOException("Empty response for $url")
             val resumed = response.code == 206 && have > 0
+            response.header("ETag")?.let { etagFile.writeText(it) } ?: etagFile.delete()
             val expected = if (body.contentLength() >= 0) body.contentLength() + (if (resumed) have else 0) else -1
             var written = if (resumed) have else 0L
             body.byteStream().use { src ->
@@ -290,6 +319,7 @@ object ModelDownloader {
             if (expected >= 0 && written != expected) {
                 throw IOException("Incomplete download for ${dest.name}: $written/$expected bytes")
             }
+            etagFile.delete() // never leave it next to a finished file (model dirs are scanned by prefix)
             return written
         }
     }

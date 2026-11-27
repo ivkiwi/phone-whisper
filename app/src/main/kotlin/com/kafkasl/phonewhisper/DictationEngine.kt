@@ -43,6 +43,7 @@ object DictationEngine {
     const val SAMPLE_RATE = 16000
     private const val TAG = "DictationEngine"
     private const val MODEL_IDLE_RELEASE_MS = 2 * 60 * 1000L
+    private const val MAX_EXTERNAL_PCM_BYTES = SAMPLE_RATE * 2 * 10 * 60 // 10 minutes
 
     private val handler = Handler(Looper.getMainLooper())
     @Volatile private var appContext: Context? = null
@@ -76,6 +77,8 @@ object DictationEngine {
     /** Local model of the current utterance; null with cloud transcription. */
     @Volatile private var currentModel: String? = null
     @Volatile private var currentUseLocal = true
+
+    private val reloadRunnable = Runnable { reloadModel() }
 
     private val releaseModelRunnable = Runnable {
         if (state != State.IDLE) { scheduleModelRelease(); return@Runnable }
@@ -138,6 +141,8 @@ object DictationEngine {
     /** Reload after the selected models or decoding settings change. Lazy if nothing is loaded. */
     fun reloadModel() {
         if (appContext == null) return
+        // Never free a recognizer an utterance is still using; retry once it is done.
+        if (state != State.IDLE) { handler.removeCallbacks(reloadRunnable); handler.postDelayed(reloadRunnable, 500); return }
         val any = synchronized(modelLock) { transcribers.isNotEmpty() || loading.isNotEmpty() }
         if (!any) return
         thread {
@@ -267,6 +272,8 @@ object DictationEngine {
     /** Audio for an utterance started with [startExternal]. Main thread. */
     fun feedExternal(pcm: ByteArray) {
         if (state != State.RECORDING || audioRecord != null || pcm.isEmpty()) return
+        // Another process feeds this: bound the utterance instead of growing memory forever.
+        if ((pcmStream?.size() ?: 0) >= MAX_EXTERNAL_PCM_BYTES) { stopAndTranscribe(); return }
         pcmStream?.write(pcm, 0, pcm.size)
         streamSession?.accept(PcmConverter.toFloatSamples(pcm, pcm.size))
     }
@@ -432,6 +439,7 @@ object DictationEngine {
 
     private fun handleTranscript(gen: Int, text: String?) {
         scheduleModelRelease()
+        if (gen != generation) return // cancelled: don't send the text to the cleanup endpoint
         if (text.isNullOrBlank()) { fail(gen, "No speech detected"); return }
 
         if (!allowCleanup) { succeed(gen, text, Notice.NONE); return }
