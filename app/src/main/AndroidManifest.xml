@@ -5,6 +5,13 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Lets a keyboard the user trusts (the HeliBoard fork) use this app's dictation. -->
+    <permission
+        android:name="com.kafkasl.phonewhisper.permission.DICTATION"
+        android:label="@string/remote_permission_label"
+        android:description="@string/remote_permission_description"
+        android:protectionLevel="dangerous" />
+
     <application
         android:allowBackup="false"
         android:largeHeap="true"
@@ -23,6 +30,63 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".MicPermissionActivity"
+            android:exported="false"
+            android:noHistory="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <service
+            android:name=".WhisperImeService"
+            android:exported="true"
+            android:label="@string/ime_label"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/ime_config" />
+        </service>
+
+        <!-- Stand-alone voice input for apps and keyboards (RecognizerIntent), like FUTO Voice Input -->
+        <activity
+            android:name=".RecognizeActivity"
+            android:exported="true"
+            android:label="@string/popup_label"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.PhoneWhisper.Popup">
+            <intent-filter>
+                <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- SpeechRecognizer API for apps (no window); records on behalf of the calling app -->
+        <service
+            android:name=".WhisperRecognitionService"
+            android:exported="true"
+            android:label="@string/popup_label"
+            android:permission="android.permission.RECORD_AUDIO">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="android.speech"
+                android:resource="@xml/recognition_service" />
+        </service>
+
+        <service
+            android:name=".RemoteDictationService"
+            android:exported="true"
+            android:permission="com.kafkasl.phonewhisper.permission.DICTATION">
+            <intent-filter>
+                <action android:name="com.kafkasl.phonewhisper.action.BIND_DICTATION" />
+            </intent-filter>
+        </service>
 
         <service
             android:name=".WhisperAccessibilityService"

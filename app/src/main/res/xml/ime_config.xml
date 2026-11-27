@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The "voice" subtype makes this the voice-input shortcut for other keyboards
+  (InputMethodManager#getShortcutInputMethodsAndSubtypes): their mic key, e.g. in
+  HeliBoard or AOSP-based keyboards, switches here. overridesImplicitlyEnabledSubtype
+  keeps the subtype enabled as soon as the keyboard itself is enabled.
+-->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="com.kafkasl.phonewhisper.MainActivity"
+    android:supportsSwitchingToNextInputMethod="true">
+    <subtype
+        android:label="@string/ime_label"
+        android:imeSubtypeMode="voice"
+        android:imeSubtypeLocale=""
+        android:overridesImplicitlyEnabledSubtype="true" />
+</input-method>

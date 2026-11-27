@@ -1,5 +1,6 @@
 package com.kafkasl.phonewhisper
 
+import android.content.SharedPreferences
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONObject
@@ -21,6 +22,21 @@ object OpenAiCompatibleApi {
     data class ModelListResult(val models: List<String>?, val error: String?)
 
     private val client = OkHttpClient()
+
+    /** Provider-specific API key, falling back to the legacy shared key. */
+    fun apiKey(prefs: SharedPreferences, prefKey: String): String =
+        prefs.getString(prefKey, null)?.takeIf { it.isNotBlank() }
+            ?: prefs.getString(LEGACY_API_KEY_PREF, "") ?: ""
+
+    /** Provider-specific base URL, falling back to the legacy shared URL. */
+    fun apiBaseUrl(prefs: SharedPreferences, prefKey: String): String =
+        normalizedBaseUrl(
+            prefs.getString(prefKey, null)?.takeIf { it.isNotBlank() }
+                ?: prefs.getString(LEGACY_API_BASE_URL_PREF, DEFAULT_BASE_URL)
+        )
+
+    fun model(prefs: SharedPreferences, prefKey: String, defaultModel: String): String =
+        prefs.getString(prefKey, defaultModel)?.ifBlank { defaultModel } ?: defaultModel
 
     fun normalizedBaseUrl(value: String?): String {
         val raw = value?.trim().orEmpty().ifBlank { DEFAULT_BASE_URL }

@@ -52,9 +52,9 @@ object AppUpdater {
     }
 
     /**
-     * Download the APK into cache/updates/, replacing older builds. Process-wide single flight:
-     * returns null if a download is already running (e.g. started before the activity was
-     * recreated). Blocking.
+     * Download the APK into cache/updates/, resuming a partial of the same build and dropping
+     * older ones. Process-wide single flight: returns null if a download is already running
+     * (e.g. started before the activity was recreated). Blocking.
      */
     fun download(ctx: Context, update: AppUpdate, onProgress: (Long) -> Unit): File? {
         if (!downloading.compareAndSet(false, true)) return null
@@ -62,11 +62,11 @@ object AppUpdater {
             downloaded(ctx, update)?.let { return it }
             val apk = apkFile(ctx, update)
             val dir = apk.parentFile!!
-            dir.deleteRecursively()
-            dir.mkdirs()
             val part = File(dir, "${apk.name}.part")
-            var done = 0L
-            ModelDownloader.downloadTo(update.apkUrl, part) { delta -> done += delta; onProgress(done) }
+            dir.listFiles()?.filter { it != part }?.forEach { it.deleteRecursively() } // keep a partial of this build to resume
+            dir.mkdirs()
+            var done = part.length()
+            ModelDownloader.downloadWithRetry(update.apkUrl, part) { delta -> done += delta; onProgress(done) }
             if (!part.renameTo(apk)) throw IOException("Failed to save ${apk.name}")
             return apk
         } finally {

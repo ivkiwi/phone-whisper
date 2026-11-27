@@ -10,9 +10,6 @@ import android.content.IntentFilter
 import android.content.res.ColorStateList
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -29,17 +26,13 @@ import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
-import java.io.ByteArrayOutputStream
-import kotlin.concurrent.thread
 import kotlin.math.abs
-import kotlin.math.sqrt
 
 class WhisperAccessibilityService : AccessibilityService() {
 
     companion object {
         var instance: WhisperAccessibilityService? = null
         private const val TAG = "PhoneWhisper"
-        private const val SAMPLE_RATE = 16000
         private const val BTN_DP = 44
         private const val PAD_DP = 10
         private const val MARGIN_DP = 8
@@ -54,9 +47,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         private const val COLOR_RING = 0xFFE8EAED.toInt()
     }
 
-    private enum class State { IDLE, RECORDING, TRANSCRIBING }
-
-    private var state = State.IDLE
+    private val state get() = if (DictationEngine.isOwner(dictationListener)) DictationEngine.state else DictationEngine.State.IDLE
     private var overlayView: FrameLayout? = null
     private var button: ImageView? = null
     private var spinner: ProgressBar? = null
@@ -64,17 +55,13 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var feedbackView: TextView? = null
     private var layoutParams: WindowManager.LayoutParams? = null
     private var feedbackLayoutParams: WindowManager.LayoutParams? = null
-    private var audioRecord: AudioRecord? = null
-    private var pcmStream: ByteArrayOutputStream? = null
-    @Volatile
-    private var streamSession: LocalTranscriber.StreamingSession? = null
     private val handler = Handler(Looper.getMainLooper())
     // Smoothed microphone level driving the recording animation (button scale + equalizer).
     @Volatile private var targetRecordingLevel = 0f
     private var renderedRecordingLevel = 0f
     private val animateRecordingLevel = object : Runnable {
         override fun run() {
-            if (state != State.RECORDING) return
+            if (state != DictationEngine.State.RECORDING) return
             renderedRecordingLevel += (targetRecordingLevel - renderedRecordingLevel) * 0.4f
             val scale = 1f + renderedRecordingLevel * 0.4f
             button?.scaleX = scale
@@ -86,7 +73,10 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var screenReceiverRegistered = false
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == Intent.ACTION_SCREEN_OFF) cancelRecording("screen_off")
+            if (intent?.action == Intent.ACTION_SCREEN_OFF) {
+                Log.i(TAG, "Cancelling recording: screen_off")
+                DictationEngine.cancel(dictationListener, onlyWhileRecording = true)
+            }
         }
     }
     private val hideFeedback = Runnable {
@@ -95,36 +85,45 @@ class WhisperAccessibilityService : AccessibilityService() {
         }?.start()
     }
 
-    // Local transcription engine (loaded dynamically)
-    @Volatile
-    private var localTranscriber: LocalTranscriber? = null
 
-    @Volatile
-    private var isModelLoading = false
-
-    private val releaseModelRunnable = Runnable {
-        thread {
-            synchronized(this) {
-                localTranscriber?.let {
-                    Log.i(TAG, "Releasing local transcriber model due to inactivity")
-                    it.release()
-                    localTranscriber = null
+    private val dictationListener = object : DictationEngine.Listener {
+        override fun onStateChanged(state: DictationEngine.State) {
+            when (state) {
+                DictationEngine.State.RECORDING -> {
+                    setBusy(false)
+                    setAppearance(COLOR_RECORDING)
+                    startRecordingAnimation()
+                }
+                DictationEngine.State.TRANSCRIBING -> {
+                    stopRecordingAnimation()
+                    setAppearance(COLOR_BUSY)
+                    setBusy(true)
+                }
+                DictationEngine.State.IDLE -> {
+                    stopRecordingAnimation()
+                    setBusy(false)
+                    setAppearance(COLOR_IDLE)
                 }
             }
         }
-    }
 
-    private fun resetModelReleaseTimer() {
-        handler.removeCallbacks(releaseModelRunnable)
-        handler.postDelayed(releaseModelRunnable, 2 * 60 * 1000) // 2 minutes
-    }
-
-    private fun ensureModelLoaded() {
-        handler.removeCallbacks(releaseModelRunnable)
-        if (localTranscriber == null) {
-            Log.i(TAG, "Pre-loading model...")
-            thread { initLocalModel() }
+        override fun onLevel(level: Float) {
+            targetRecordingLevel = level
         }
+
+        override fun onResult(text: String, notice: DictationEngine.Notice) {
+            when (notice) {
+                DictationEngine.Notice.NONE -> injectText(text)
+                DictationEngine.Notice.CLEANUP_NO_KEY -> {
+                    toast("Cleanup needs API key. Using raw text.")
+                    injectText(text)
+                }
+                DictationEngine.Notice.CLEANUP_FAILED ->
+                    injectText(text, feedback = "Cleanup failed — raw copied to clipboard", feedbackDurationMs = 3000)
+            }
+        }
+
+        override fun onError(message: String) = toast(message)
     }
 
     private val dp get() = resources.displayMetrics.density
@@ -133,13 +132,11 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
+        DictationEngine.attach(this)
         registerScreenReceiver()
         showOverlay()
-        // Try to load local model in background, and schedule release if unused
-        thread {
-            initLocalModel()
-            resetModelReleaseTimer()
-        }
+        // Load the local model in the background and release it if unused.
+        DictationEngine.preloadModel()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
@@ -148,67 +145,11 @@ class WhisperAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         instance = null
         unregisterScreenReceiver()
-        cancelRecording("service_destroy")
+        DictationEngine.cancel(dictationListener)
         removeOverlay()
-        handler.removeCallbacks(releaseModelRunnable)
-        streamSession?.abandon()
-        streamSession = null
-        synchronized(this) {
-            localTranscriber?.let {
-                Log.i(TAG, "Releasing model during service destroy")
-                it.release()
-                localTranscriber = null
-            }
-        }
+        // The model is shared with the voice keyboard; let the idle timer free it.
+        DictationEngine.scheduleModelRelease()
         super.onDestroy()
-    }
-
-    private fun initLocalModel() {
-        synchronized(this) {
-            if (localTranscriber != null) return
-            if (isModelLoading) return
-            isModelLoading = true
-        }
-        try {
-            val modelName = prefs().getString("model_name", "") ?: ""
-            val transcriber = if (modelName.isBlank() || !isLocalModelInstalled(this, modelName)) {
-                // Auto-detect first available model
-                val models = LocalTranscriber.availableModels(this)
-                if (models.isNotEmpty()) {
-                    Log.i(TAG, "Auto-detected model: ${models.first()}")
-                    LocalTranscriber.create(this, models.first())
-                } else null
-            } else {
-                LocalTranscriber.create(this, modelName)
-            }
-            synchronized(this) {
-                localTranscriber = transcriber
-                if (transcriber != null) {
-                    Log.i(TAG, "Local transcription ready")
-                } else {
-                    Log.i(TAG, "No local model found, will use API")
-                }
-            }
-        } finally {
-            synchronized(this) {
-                isModelLoading = false
-            }
-        }
-    }
-
-    /** Reload local model (called from MainActivity when settings change) */
-    fun reloadModel() {
-        thread {
-            synchronized(this) {
-                localTranscriber?.let {
-                    Log.i(TAG, "Releasing old model for reload")
-                    it.release()
-                    localTranscriber = null
-                }
-            }
-            initLocalModel()
-            resetModelReleaseTimer()
-        }
     }
 
     // --- Overlay ---
@@ -430,283 +371,23 @@ class WhisperAccessibilityService : AccessibilityService() {
         equalizerView?.reset()
     }
 
-    /** Compute an RMS level from a PCM chunk and feed it to the recording animation. */
-    private fun updateAudioLevel(buf: ByteArray, byteCount: Int) {
-        var sum = 0.0
-        var samples = 0
-        var i = 0
-        while (i + 1 < byteCount) {
-            val lo = buf[i].toInt() and 0xFF
-            val hi = buf[i + 1].toInt()
-            val sample = ((hi shl 8) or lo).toShort().toInt()
-            sum += sample.toDouble() * sample
-            samples++
-            i += 2
-        }
-        if (samples == 0) return
-        val rms = sqrt(sum / samples) / 32768.0
-        targetRecordingLevel = (rms * 8.5).coerceIn(0.02, 1.0).toFloat()
-    }
-
     // --- State machine ---
 
     private fun onTap() {
         when (state) {
-            State.IDLE -> startRecording()
-            State.RECORDING -> stopAndTranscribe()
-            State.TRANSCRIBING -> {}
+            DictationEngine.State.IDLE -> startRecording()
+            DictationEngine.State.RECORDING -> DictationEngine.stopAndTranscribe()
+            DictationEngine.State.TRANSCRIBING -> {}
         }
     }
 
     private fun startRecording() {
-        val useLocal = prefs().getBoolean("use_local", true)
-        if (useLocal) {
-            ensureModelLoaded()
+        when (DictationEngine.start(dictationListener)) {
+            DictationEngine.StartResult.STARTED -> {}
+            DictationEngine.StartResult.NO_PERMISSION -> toast("Grant audio permission in Phone Whisper app")
+            DictationEngine.StartResult.MIC_ERROR -> toast("Microphone is unavailable")
+            DictationEngine.StartResult.BUSY -> toast("Dictation already in progress")
         }
-
-        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
-            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            toast("Grant audio permission in Phone Whisper app"); return
-        }
-
-        val bufSize = AudioRecord.getMinBufferSize(
-            SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
-        )
-        audioRecord = try {
-            AudioRecord(
-                MediaRecorder.AudioSource.MIC, SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize
-            )
-        } catch (_: SecurityException) { toast("Audio permission denied"); return }
-
-        pcmStream = ByteArrayOutputStream()
-        // If a streaming model is already loaded, decode incrementally while recording so
-        // the result is ready almost instantly on stop. Otherwise fall back to one-shot.
-        val local = localTranscriber
-        streamSession = if (useLocal && local != null && local.isStreaming)
-            local.newStreamingSession(SAMPLE_RATE) else null
-
-        audioRecord!!.startRecording()
-        state = State.RECORDING
-        setBusy(false)
-        setAppearance(COLOR_RECORDING)
-        startRecordingAnimation()
-
-        thread {
-            val buf = ByteArray(bufSize)
-            while (state == State.RECORDING) {
-                val n = audioRecord?.read(buf, 0, buf.size) ?: break
-                if (n > 0) {
-                    pcmStream?.write(buf, 0, n)
-                    updateAudioLevel(buf, n)
-                    streamSession?.let { feedPcmChunk(it, buf, n) }
-                }
-            }
-        }
-    }
-
-    /** Convert 16-bit little-endian PCM bytes to float samples and queue them. */
-    private fun feedPcmChunk(session: LocalTranscriber.StreamingSession, buf: ByteArray, n: Int) {
-        val count = n / 2
-        val fa = FloatArray(count)
-        for (i in 0 until count) {
-            val lo = buf[i * 2].toInt() and 0xFF
-            val hi = buf[i * 2 + 1].toInt()
-            fa[i] = ((hi shl 8) or lo).toShort().toFloat() / 32768f
-        }
-        session.accept(fa)
-    }
-
-    private fun stopAndTranscribe() {
-        state = State.TRANSCRIBING
-        stopRecordingAnimation()
-        setAppearance(COLOR_BUSY)
-        setBusy(true)
-
-        audioRecord?.stop()
-        audioRecord?.release()
-        audioRecord = null
-
-        val pcm = pcmStream?.toByteArray() ?: ByteArray(0)
-        pcmStream = null
-        val session = streamSession
-        streamSession = null
-
-        if (pcm.isEmpty()) { session?.abandon(); reset("No audio captured"); return }
-
-        val useLocal = prefs().getBoolean("use_local", true)
-        if (useLocal && session != null) {
-            finishStreaming(session)
-        } else if (useLocal) {
-            thread {
-                var attempts = 0
-                // Wait up to 10 seconds (100 * 100ms) for local model to load if in progress
-                while (localTranscriber == null && isModelLoading && attempts < 100) {
-                    Thread.sleep(100)
-                    attempts++
-                }
-                val local = localTranscriber
-                if (local != null) {
-                    transcribeLocal(pcm, local)
-                } else {
-                    handler.post {
-                        reset("Local model not loaded yet. Please try again.")
-                    }
-                }
-            }
-        } else {
-            transcribeApi(pcm)
-        }
-    }
-
-    /** Drain an incremental streaming session and route its final text. */
-    private fun finishStreaming(session: LocalTranscriber.StreamingSession) {
-        thread {
-            try {
-                val t0 = System.currentTimeMillis()
-                val text = session.finish()
-                Log.i(TAG, "Streaming transcription drained in ${System.currentTimeMillis() - t0}ms")
-                handleTranscriptionResult(text)
-            } catch (e: Exception) {
-                Log.e(TAG, "Streaming transcription failed", e)
-                resetModelReleaseTimer()
-                handler.post {
-                    toast("Local error: ${e.message}")
-                    state = State.IDLE
-                    setBusy(false)
-                    setAppearance(COLOR_IDLE)
-                }
-            }
-        }
-    }
-
-    private fun transcribeLocal(pcm: ByteArray, transcriber: LocalTranscriber) {
-        thread {
-            try {
-                // Convert 16-bit PCM bytes to float samples
-                val samples = FloatArray(pcm.size / 2)
-                for (i in samples.indices) {
-                    val lo = pcm[i * 2].toInt() and 0xFF
-                    val hi = pcm[i * 2 + 1].toInt()
-                    samples[i] = ((hi shl 8) or lo).toShort().toFloat() / 32768f
-                }
-
-                val t0 = System.currentTimeMillis()
-                val text = transcriber.transcribe(samples, SAMPLE_RATE)
-                val ms = System.currentTimeMillis() - t0
-                Log.i(TAG, "Local transcription: ${ms}ms, ${samples.size / SAMPLE_RATE}s audio")
-
-                handleTranscriptionResult(text)
-            } catch (e: Exception) {
-                Log.e(TAG, "Local transcription failed", e)
-                resetModelReleaseTimer()
-                handler.post {
-                    toast("Local error: ${e.message}")
-                    state = State.IDLE
-                    setBusy(false)
-                    setAppearance(COLOR_IDLE)
-                }
-            }
-        }
-    }
-
-    private fun transcribeApi(pcm: ByteArray) {
-        val wav = WavWriter.encode(pcm)
-        val apiKey = apiKey(OpenAiCompatibleApi.TRANSCRIPTION_API_KEY_PREF)
-        val apiBaseUrl = apiBaseUrl(OpenAiCompatibleApi.TRANSCRIPTION_API_BASE_URL_PREF)
-        val model = prefs().getString(OpenAiCompatibleApi.TRANSCRIPTION_MODEL_PREF, OpenAiCompatibleApi.DEFAULT_TRANSCRIPTION_MODEL)
-            ?: OpenAiCompatibleApi.DEFAULT_TRANSCRIPTION_MODEL
-        if (apiKey.isBlank()) { reset("Set transcription API key in Phone Whisper app"); return }
-
-        TranscriberClient.transcribe(wav, apiKey, apiBaseUrl, model) { result ->
-            if (result.text != null && result.text.isNotBlank()) {
-                handleTranscriptionResult(result.text)
-            } else {
-                handler.post {
-                    toast("Error: ${result.error ?: "empty transcript"}")
-                    state = State.IDLE
-                    setBusy(false)
-                    setAppearance(COLOR_IDLE)
-                }
-            }
-        }
-    }
-
-    private fun handleTranscriptionResult(text: String?) {
-        resetModelReleaseTimer()
-        if (text.isNullOrBlank()) {
-            handler.post {
-                toast("No speech detected")
-                state = State.IDLE
-                setBusy(false)
-                setAppearance(COLOR_IDLE)
-            }
-            return
-        }
-
-        val usePostProcessing = prefs().getBoolean("use_post_processing", false)
-        val apiKey = apiKey(OpenAiCompatibleApi.CLEANUP_API_KEY_PREF)
-        val apiBaseUrl = apiBaseUrl(OpenAiCompatibleApi.CLEANUP_API_BASE_URL_PREF)
-        val model = prefs().getString(OpenAiCompatibleApi.CLEANUP_MODEL_PREF, OpenAiCompatibleApi.DEFAULT_CLEANUP_MODEL)
-            ?: OpenAiCompatibleApi.DEFAULT_CLEANUP_MODEL
-
-        if (usePostProcessing) {
-            if (apiKey.isBlank()) {
-                handler.post {
-                    toast("Cleanup needs API key. Using raw text.")
-                    injectText(text)
-                    state = State.IDLE
-                    setBusy(false)
-                    setAppearance(COLOR_IDLE)
-                }
-                return
-            }
-
-            val prompt = prefs().getString("post_processing_prompt", PostProcessor.DEFAULT_PROMPT) ?: PostProcessor.DEFAULT_PROMPT
-            
-            PostProcessor.process(text, prompt, apiKey, apiBaseUrl, model) { result ->
-                handler.post {
-                    if (result.text != null && result.text.isNotBlank()) {
-                        injectText(result.text)
-                    } else {
-                        injectText(text, feedback = "Cleanup failed — raw copied to clipboard", feedbackDurationMs = 3000)
-                    }
-                    state = State.IDLE
-                    setBusy(false)
-                    setAppearance(COLOR_IDLE)
-                }
-            }
-        } else {
-            handler.post {
-                injectText(text)
-                state = State.IDLE
-                setBusy(false)
-                setAppearance(COLOR_IDLE)
-            }
-        }
-    }
-
-    private fun reset(msg: String) {
-        toast(msg)
-        state = State.IDLE
-        setBusy(false)
-        setAppearance(COLOR_IDLE)
-    }
-
-    /** Abort an in-progress recording without transcribing (e.g. screen turned off). */
-    private fun cancelRecording(reason: String) {
-        if (state != State.RECORDING) return
-        Log.i(TAG, "Cancelling recording: $reason")
-        state = State.IDLE
-        try { audioRecord?.stop() } catch (_: IllegalStateException) {}
-        audioRecord?.release()
-        audioRecord = null
-        streamSession?.abandon()
-        streamSession = null
-        pcmStream = null
-        stopRecordingAnimation()
-        setBusy(false)
-        setAppearance(COLOR_IDLE)
     }
 
     private fun registerScreenReceiver() {
@@ -891,14 +572,5 @@ class WhisperAccessibilityService : AccessibilityService() {
         )
     }
 
-    private fun prefs() = getSharedPreferences("phonewhisper", MODE_PRIVATE)
-    private fun apiKey(prefKey: String) =
-        prefs().getString(prefKey, null)?.takeIf { it.isNotBlank() }
-            ?: prefs().getString(OpenAiCompatibleApi.LEGACY_API_KEY_PREF, "") ?: ""
-    private fun apiBaseUrl(prefKey: String) =
-        OpenAiCompatibleApi.normalizedBaseUrl(
-            prefs().getString(prefKey, null)?.takeIf { it.isNotBlank() }
-                ?: prefs().getString(OpenAiCompatibleApi.LEGACY_API_BASE_URL_PREF, OpenAiCompatibleApi.DEFAULT_BASE_URL)
-        )
     private fun toast(msg: String) { handler.post { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() } }
 }

@@ -116,8 +116,8 @@ val MODEL_CATALOG = listOf(
         100, "★★★ Best value", recommended = false),
     Model("Whisper Base", "sherpa-onnx-whisper-base.en",
         199, "★★★"),
-    Model("Parakeet 0.6B", "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
-        465, "★★★★ Best quality"),
+    Model("Parakeet 0.6B v3 (25 languages, incl. Russian)", "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+        465, "★★★★ Multilingual, punctuation"),
     Model("Moonshine Tiny", "sherpa-onnx-moonshine-tiny-en-int8",
         103, "★★☆ Fast"),
 )
@@ -171,19 +171,34 @@ object ModelDownloader {
                 } else {
                     val url = model.url ?: "$BASE_URL/${model.archive}.tar.bz2"
                     val tmpFile = File(ctx.cacheDir, "${model.archive}.tar.bz2")
+                    val total = model.sizeMb * 1_000_000L
+                    var done = if (tmpFile.exists()) tmpFile.length() else 0L
+                    downloadWithRetry(url, tmpFile) { delta ->
+                        done += delta
+                        if (total > 0) onState(DownloadState.Downloading((done.toFloat() / total).coerceIn(0f, 1f)))
+                    }
+                    onState(DownloadState.Extracting)
                     try {
-                        downloadFile(url, tmpFile, onState)
-                        onState(DownloadState.Extracting)
                         extractTarBz2(tmpFile, File(ctx.filesDir, "models"))
                     } finally {
-                        tmpFile.delete()
+                        tmpFile.delete() // kept on a download failure so ↓ resumes
                     }
                 }
                 onState(DownloadState.Done)
             } catch (e: Exception) {
-                onState(DownloadState.Error(e.message ?: "Unknown error"))
+                onState(DownloadState.Error(friendlyError(e)))
             }
         }.start()
+    }
+
+    /** Turn network exceptions into advice the user can act on. */
+    internal fun friendlyError(e: Exception): String = when (e) {
+        is java.net.UnknownHostException ->
+            "No internet for this app. Check: Android settings → Apps → this keyboard → " +
+                "Mobile data & Wi-Fi (allow, incl. background), Data Saver, firewall / ad-blocker apps. Tap ↓ to resume."
+        is java.net.SocketException, is java.net.SocketTimeoutException, is javax.net.ssl.SSLException ->
+            "Connection dropped (${e.message ?: e.javaClass.simpleName}). Keep this screen open while downloading; tap ↓ to resume."
+        else -> e.message ?: "Unknown error"
     }
 
     /**
@@ -196,15 +211,18 @@ object ModelDownloader {
     ) {
         val finalDir = File(ctx.filesDir, "models/${model.archive}")
         val tmpDir = File(ctx.filesDir, "models/.${model.archive}.partial")
-        tmpDir.deleteRecursively()
-        tmpDir.mkdirs()
+        tmpDir.mkdirs() // kept after a failure, so the next attempt resumes
         try {
             val total = model.sizeMb * 1_000_000L
             var done = 0L
             for (f in hf.files) {
                 val dest = File(tmpDir, f.local)
                 dest.parentFile?.mkdirs()
-                val bytes = downloadTo(hf.url(f), dest) { delta ->
+                if (f.sizeBytes != null && dest.length() == f.sizeBytes) { // finished in an earlier attempt
+                    done += dest.length()
+                    continue
+                }
+                val bytes = downloadWithRetry(hf.url(f), dest) { delta ->
                     done += delta
                     if (total > 0)
                         onState(DownloadState.Downloading((done.toFloat() / total).coerceIn(0f, 1f)))
@@ -217,21 +235,49 @@ object ModelDownloader {
             onState(DownloadState.Extracting) // brief "finishing" state while we swap into place
             if (finalDir.exists()) finalDir.deleteRecursively()
             if (!tmpDir.renameTo(finalDir)) throw IOException("Failed to install model into ${finalDir.name}")
-        } catch (e: Exception) {
-            tmpDir.deleteRecursively()
+        } catch (e: IOException) {
+            if (e.message?.startsWith("HTTP 4") == true) tmpDir.deleteRecursively() // wrong file: start over
             throw e
         }
     }
 
-    /** Download a single URL to [dest], invoking [onDelta] with each chunk's byte count. */
-    internal fun downloadTo(url: String, dest: File, onDelta: (Int) -> Unit): Long {
-        client.newCall(Request.Builder().url(url).build()).execute().use { response ->
+    /**
+     * [downloadTo] with up to [ATTEMPTS] tries; each retry resumes from the bytes already in
+     * [dest]. Covers mobile-network drops and short DNS failures.
+     */
+    internal fun downloadWithRetry(url: String, dest: File, onDelta: (Int) -> Unit): Long {
+        var lastError: IOException? = null
+        for (attempt in 0 until ATTEMPTS) {
+            if (attempt > 0) Thread.sleep(RETRY_DELAYS_MS[attempt - 1])
+            try {
+                return downloadTo(url, dest, onDelta)
+            } catch (e: IOException) {
+                if (e.message?.startsWith("HTTP 4") == true) throw e // not transient
+                lastError = e
+            }
+        }
+        throw lastError ?: IOException("Download failed")
+    }
+
+    private const val ATTEMPTS = 5
+    private val RETRY_DELAYS_MS = longArrayOf(2_000, 4_000, 8_000, 16_000, 30_000)
+
+    /**
+     * Download [url] to [dest], resuming after the bytes already in [dest] (HTTP Range);
+     * [onDelta] gets each new chunk's byte count. Returns the file's final length.
+     */
+    private fun downloadTo(url: String, dest: File, onDelta: (Int) -> Unit): Long {
+        val have = if (dest.exists()) dest.length() else 0L
+        val request = Request.Builder().url(url).apply { if (have > 0) header("Range", "bytes=$have-") }.build()
+        client.newCall(request).execute().use { response ->
+            if (response.code == 416 && have > 0) return have // already complete
             if (!response.isSuccessful) throw IOException("HTTP ${response.code} for $url")
             val body = response.body ?: throw IOException("Empty response for $url")
-            val expected = body.contentLength()
-            var written = 0L
+            val resumed = response.code == 206 && have > 0
+            val expected = if (body.contentLength() >= 0) body.contentLength() + (if (resumed) have else 0) else -1
+            var written = if (resumed) have else 0L
             body.byteStream().use { src ->
-                FileOutputStream(dest).use { dst ->
+                FileOutputStream(dest, resumed).use { dst ->
                     val buf = ByteArray(16384)
                     var n: Int
                     while (src.read(buf).also { n = it } != -1) {
@@ -242,7 +288,6 @@ object ModelDownloader {
                 }
             }
             if (expected >= 0 && written != expected) {
-                dest.delete()
                 throw IOException("Incomplete download for ${dest.name}: $written/$expected bytes")
             }
             return written
@@ -251,29 +296,6 @@ object ModelDownloader {
 
     fun delete(ctx: Context, model: Model) =
         modelDir(ctx, model).deleteRecursively()
-
-    private fun downloadFile(
-        url: String, dest: File, onState: (DownloadState) -> Unit
-    ) {
-        val response = client.newCall(Request.Builder().url(url).build()).execute()
-        if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
-        val body = response.body ?: throw IOException("Empty response")
-        val total = body.contentLength()
-        var downloaded = 0L
-
-        body.byteStream().use { src ->
-            FileOutputStream(dest).use { dst ->
-                val buf = ByteArray(16384)
-                var n: Int
-                while (src.read(buf).also { n = it } != -1) {
-                    dst.write(buf, 0, n)
-                    downloaded += n
-                    if (total > 0)
-                        onState(DownloadState.Downloading(downloaded.toFloat() / total))
-                }
-            }
-        }
-    }
 
     /** Extract tar.bz2 to outDir. Validates paths to prevent traversal. */
     fun extractTarBz2(archive: File, outDir: File) {

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Phone Whisper</string>
+    <string name="accessibility_description">Диктовка: записывает звук, распознаёт речь и вставляет текст в активное поле.</string>
+    <string name="ime_label">Phone Whisper — голос</string>
+    <string name="ime_hint">Нажмите на микрофон и говорите</string>
+    <string name="ime_mic">Диктовать</string>
+    <string name="ime_recording">Слушаю… нажмите на микрофон, чтобы закончить</string>
+    <string name="ime_redictate_recording">Скажите замену для «%1$s»…</string>
+    <string name="ime_transcribing">Распознаю…</string>
+    <string name="ime_grant_mic">Разрешите доступ к микрофону и нажмите ещё раз</string>
+    <string name="ime_mic_error">Микрофон недоступен</string>
+    <string name="ime_busy">Уже идёт диктовка</string>
+    <string name="ime_cleanup_no_key">Для чистки нужен API-ключ — вставлен исходный текст</string>
+    <string name="ime_cleanup_failed">Чистка не удалась — вставлен исходный текст</string>
+    <string name="ime_text_changed">Текст изменился — фраза не найдена</string>
+    <string name="ime_action_variants">✨ Варианты</string>
+    <string name="ime_variants_loading">✨ …</string>
+    <string name="ime_variants_none">Вариантов нет</string>
+    <string name="ime_variants_need_key">Для вариантов нужен API-ключ чистки (Post-Processing в приложении)</string>
+    <string name="ime_variants_error">Не удалось получить варианты: %1$s</string>
+    <string name="ime_action_redictate">🎤 Заново</string>
+    <string name="ime_action_delete">Удалить</string>
+    <string name="ime_action_type">⌨ Набрать</string>
+    <string name="ime_key_space">пробел</string>
+    <string name="ime_key_delete_word">⌫ слово</string>
+    <string name="ime_word_left">Предыдущее слово</string>
+    <string name="ime_word_right">Следующее слово</string>
+    <string name="ime_backspace">Стереть</string>
+    <string name="ime_enter">Ввод</string>
+    <string name="ime_switch_keyboard">Сменить клавиатуру (удерживать — список)</string>
+    <string name="ime_cleaning">Чищу текст…</string>
+    <string name="ime_ptt">Говорить, удерживая кнопку</string>
+    <string name="remote_permission_label">использовать диктовку Phone Whisper</string>
+    <string name="remote_permission_description">Передавать звук с микрофона в Phone Whisper для распознавания речи (на устройстве или с вашими API-ключами) и получать текст.</string>
+    <string name="ime_needs_model">Для этой кнопки ещё нет модели — скачайте её в приложении</string>
+    <string name="popup_label">Голосовой ввод Phone Whisper</string>
+    <string name="popup_listening">Слушаю…</string>
+    <string name="popup_transcribing">Распознаю…</string>
+    <string name="popup_cleaning">Чищу текст…</string>
+    <string name="popup_hint">Говорите</string>
+    <string name="popup_done">Готово</string>
+</resources>
