@@ -26,6 +26,8 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools  # the default also asks for 'tools', which the SDK repo dropped
 
       - name: Fetch sherpa-onnx native libs (arm64-v8a)
         run: |
