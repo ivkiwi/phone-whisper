@@ -275,6 +275,7 @@ object ModelDownloader {
     private fun isPermanent(e: IOException) =
         Regex("^HTTP (401|403|404|410)\\b").containsMatchIn(e.message.orEmpty())
 
+    private const val DONE = "\ndone"
     private const val ATTEMPTS = 5
     private val RETRY_DELAYS_MS = longArrayOf(2_000, 4_000, 8_000, 16_000, 30_000)
 
@@ -287,7 +288,10 @@ object ModelDownloader {
      */
     private fun downloadTo(url: String, dest: File, onDelta: (Int) -> Unit): Long {
         val etagFile = File(dest.path + ".etag")
-        val etag = etagFile.takeIf { it.isFile }?.readText()
+        val sidecar = etagFile.takeIf { it.isFile }?.readText()
+        // Finished in an earlier attempt (HF LFS answers a bare 416, so ask nothing).
+        if (sidecar != null && sidecar.endsWith(DONE) && dest.isFile) return dest.length()
+        val etag = sidecar?.takeIf { it.isNotEmpty() }
         val have = if (etag != null && dest.exists()) dest.length() else 0L
         val request = Request.Builder().url(url).apply {
             if (have > 0) header("Range", "bytes=$have-").header("If-Range", etag!!)
@@ -327,6 +331,7 @@ object ModelDownloader {
             if (expected >= 0 && written != expected) {
                 throw IOException("Incomplete download for ${dest.name}: $written/$expected bytes")
             }
+            etagFile.writeText("${newEtag.orEmpty()}$DONE")
             return written
         }
     }

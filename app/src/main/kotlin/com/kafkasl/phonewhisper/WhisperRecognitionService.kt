@@ -47,6 +47,7 @@ class WhisperRecognitionService : RecognitionService() {
     private var sentEnd = false
     /** The no-speech timeout stopped the mic; an empty result then means ERROR_SPEECH_TIMEOUT. */
     private var timedOut = false
+    private var peakLevel = 0.0
 
     private val listener = object : DictationEngine.Listener {
         override fun onStateChanged(state: DictationEngine.State) {
@@ -117,6 +118,7 @@ class WhisperRecognitionService : RecognitionService() {
         quietSince = 0
         sentEnd = false
         timedOut = false
+        peakLevel = 0.0
         startedAt = System.currentTimeMillis()
         val extraSilence = recognizerIntent.getLongExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 0L)
         silenceLimitMs = when {
@@ -228,6 +230,7 @@ class WhisperRecognitionService : RecognitionService() {
         val db = if (rms > 0) (20 * log10(rms)).toFloat() + 60f else -2f // ~ -2..10 like other recognizers
         safe { cb.rmsChanged(db.coerceIn(-2f, 10f)) }
         val level = (rms * 8.5).coerceIn(0.0, 1.0)
+        peakLevel = maxOf(peakLevel, level)
         val now = System.currentTimeMillis()
         if (level > SPEECH_LEVEL) {
             heardSpeech()
@@ -238,9 +241,16 @@ class WhisperRecognitionService : RecognitionService() {
             quietSince = 0
         }
         if (!speechSeen && now - startedAt > noSpeechTimeoutMs) {
-            // Transcribe what we have: quiet speech with an offline model shows no partials.
-            timedOut = true
-            stopRecording()
+            if (peakLevel >= QUIET_LEVEL) {
+                // Something was said, just quietly (offline models show no partials): transcribe it.
+                timedOut = true
+                stopRecording()
+            } else {
+                // Real silence: don't let a Whisper-type model invent text for it.
+                record = null
+                DictationEngine.cancel(listener)
+                finishWith { it.error(SpeechRecognizer.ERROR_SPEECH_TIMEOUT) }
+            }
         }
     }
 
