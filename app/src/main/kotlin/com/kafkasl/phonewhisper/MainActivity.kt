@@ -246,6 +246,8 @@ class MainActivity : AppCompatActivity() {
                 if (result.isSuccess && update == null) AppUpdater.clearDownloads(this)
                 updateRowSub.text = when {
                     result.isFailure -> "Build $current · check failed, tap to retry"
+                    update != null && AppUpdater.isDownloading ->
+                        "Downloading build ${update.versionCode} · tap when it finishes"
                     update != null -> "Build ${update.versionCode} available · tap to install"
                     else -> "Build $current · up to date"
                 }
@@ -254,7 +256,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onUpdateTap() {
-        if (checkingUpdate) return
+        if (checkingUpdate || AppUpdater.isDownloading) return
         val update = pendingUpdate ?: return checkForUpdate()
         if (!AppUpdater.canInstall(this)) {
             // Ask before downloading: granting restarts the app on Android 11+.
