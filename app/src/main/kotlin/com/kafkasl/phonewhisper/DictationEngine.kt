@@ -66,6 +66,8 @@ object DictationEngine {
     private var audioRecord: AudioRecord? = null
     private var pcmStream: ByteArrayOutputStream? = null
     @Volatile private var streamSession: LocalTranscriber.LiveSession? = null
+    /** Session draining after stop; cancel() abandons it so it stops using the shared Vad. */
+    @Volatile private var finishingSession: LocalTranscriber.LiveSession? = null
 
     /** Which mic started the utterance: the tap mic and push-to-talk can use different models. */
     enum class Role { TAP, PTT }
@@ -341,6 +343,7 @@ object DictationEngine {
 
         val model = currentModel
         if (currentUseLocal && session != null) {
+            finishingSession = session
             finishStreaming(gen, session)
         } else if (currentUseLocal) {
             if (model == null) { fail(gen, "No local model installed. Download one in the Phone Whisper app."); return }
@@ -370,6 +373,8 @@ object DictationEngine {
         stopAudio()
         streamSession?.abandon()
         streamSession = null
+        finishingSession?.abandon()
+        finishingSession = null
         pcmStream = null
         listener = null
         isLive = false

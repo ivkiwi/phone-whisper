@@ -187,6 +187,7 @@ object ModelDownloader {
                         extractTarBz2(tmpFile, File(ctx.filesDir, "models"))
                     } finally {
                         tmpFile.delete() // kept on a download failure so ↓ resumes
+                        File(tmpFile.path + ".etag").delete()
                     }
                 }
                 onState(DownloadState.Done)
@@ -240,6 +241,8 @@ object ModelDownloader {
                 }
             }
             onState(DownloadState.Extracting) // brief "finishing" state while we swap into place
+            // Model dirs are scanned by file prefix: no encoder.int8.onnx.etag may get in.
+            tmpDir.listFiles()?.filter { it.name.endsWith(".etag") }?.forEach { it.delete() }
             if (finalDir.exists()) finalDir.deleteRecursively()
             if (!tmpDir.renameTo(finalDir)) throw IOException("Failed to install model into ${finalDir.name}")
         } catch (e: IOException) {
@@ -278,8 +281,9 @@ object ModelDownloader {
     /**
      * Download [url] to [dest], resuming after the bytes already in [dest] (HTTP Range);
      * [onDelta] gets each new chunk's byte count. Returns the file's final length.
-     * A partial is resumed only with If-Range on the ETag it was written with (kept in
-     * `<dest>.etag`), so a file replaced on the server is downloaded again from the start.
+     * A partial is resumed only if the server still has the version it was written from (its
+     * ETag is kept in `<dest>.etag`; callers delete that once the file is in place), so a
+     * file replaced on the server is downloaded again from the start.
      */
     private fun downloadTo(url: String, dest: File, onDelta: (Int) -> Unit): Long {
         val etagFile = File(dest.path + ".etag")
@@ -291,10 +295,7 @@ object ModelDownloader {
         client.newCall(request).execute().use { response ->
             if (response.code == 416 && have > 0) {
                 // "Content-Range: bytes */<total>": complete only if the partial is the whole file.
-                if (response.header("Content-Range")?.substringAfter("*/")?.toLongOrNull() == have) {
-                    etagFile.delete()
-                    return have
-                }
+                if (response.header("Content-Range")?.substringAfter("*/")?.toLongOrNull() == have) return have
                 dest.delete()
                 etagFile.delete()
                 throw IOException("Partial ${dest.name} does not match the server; restarting")
@@ -302,7 +303,14 @@ object ModelDownloader {
             if (!response.isSuccessful) throw IOException("HTTP ${response.code} for $url")
             val body = response.body ?: throw IOException("Empty response for $url")
             val resumed = response.code == 206 && have > 0
-            response.header("ETag")?.let { etagFile.writeText(it) } ?: etagFile.delete()
+            val newEtag = response.header("ETag")
+            // GitHub (Azure) and Hugging Face answer 206 even when If-Range no longer matches.
+            if (resumed && newEtag != etag) {
+                dest.delete()
+                etagFile.delete()
+                throw IOException("${dest.name} changed on the server; restarting")
+            }
+            newEtag?.let { etagFile.writeText(it) } ?: etagFile.delete()
             val expected = if (body.contentLength() >= 0) body.contentLength() + (if (resumed) have else 0) else -1
             var written = if (resumed) have else 0L
             body.byteStream().use { src ->
@@ -319,7 +327,6 @@ object ModelDownloader {
             if (expected >= 0 && written != expected) {
                 throw IOException("Incomplete download for ${dest.name}: $written/$expected bytes")
             }
-            etagFile.delete() // never leave it next to a finished file (model dirs are scanned by prefix)
             return written
         }
     }

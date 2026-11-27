@@ -45,10 +45,13 @@ class WhisperRecognitionService : RecognitionService() {
     private var silenceLimitMs = RecognizeActivity.DEFAULT_SILENCE_MS
     private var noSpeechTimeoutMs = NO_SPEECH_TIMEOUT_MS
     private var sentEnd = false
+    /** The no-speech timeout stopped the mic; an empty result then means ERROR_SPEECH_TIMEOUT. */
+    private var timedOut = false
 
     private val listener = object : DictationEngine.Listener {
         override fun onStateChanged(state: DictationEngine.State) {
             if (state == DictationEngine.State.RECORDING) live = DictationEngine.isLive
+            else record = null // the engine stopped on its own (e.g. length cap): stop the mic pump too
         }
 
         override fun onLivePartial(text: String) {
@@ -69,7 +72,7 @@ class WhisperRecognitionService : RecognitionService() {
 
         override fun onResult(text: String, notice: DictationEngine.Notice) {
             val raw = text.ifBlank { committed.toString() }.trim()
-            if (raw.isEmpty()) { fail(SpeechRecognizer.ERROR_NO_MATCH); return }
+            if (raw.isEmpty()) { fail(noSpeechError()); return }
             if (live && DictationEngine.isCleanupEnabled()) {
                 DictationEngine.cleanup(raw) { cleaned, _ -> main.post { deliver(cleaned.trim().ifBlank { raw }) } }
             } else {
@@ -79,7 +82,7 @@ class WhisperRecognitionService : RecognitionService() {
 
         override fun onError(message: String) {
             ImeLog.add("recognizer: error $message")
-            fail(if (message.startsWith("No speech")) SpeechRecognizer.ERROR_NO_MATCH else SpeechRecognizer.ERROR_CLIENT)
+            fail(if (message.startsWith("No speech")) noSpeechError() else SpeechRecognizer.ERROR_CLIENT)
         }
     }
 
@@ -113,6 +116,7 @@ class WhisperRecognitionService : RecognitionService() {
         speechSeen = false
         quietSince = 0
         sentEnd = false
+        timedOut = false
         startedAt = System.currentTimeMillis()
         val extraSilence = recognizerIntent.getLongExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 0L)
         silenceLimitMs = when {
@@ -234,18 +238,21 @@ class WhisperRecognitionService : RecognitionService() {
             quietSince = 0
         }
         if (!speechSeen && now - startedAt > noSpeechTimeoutMs) {
-            record = null
-            DictationEngine.cancel(listener)
-            finishWith { it.error(SpeechRecognizer.ERROR_SPEECH_TIMEOUT) }
+            // Transcribe what we have: quiet speech with an offline model shows no partials.
+            timedOut = true
+            stopRecording()
         }
     }
 
     /** Loud enough audio or recognised text: quiet speakers count too. */
     private fun heardSpeech() {
-        if (!speechSeen) callback?.let { cb -> safe { cb.beginningOfSpeech() } }
+        if (!speechSeen && !sentEnd) callback?.let { cb -> safe { cb.beginningOfSpeech() } }
         speechSeen = true
         quietSince = 0
     }
+
+    private fun noSpeechError() =
+        if (timedOut) SpeechRecognizer.ERROR_SPEECH_TIMEOUT else SpeechRecognizer.ERROR_NO_MATCH
 
     private fun stopRecording() {
         if (record == null) return

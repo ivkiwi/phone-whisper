@@ -378,6 +378,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun onModelAction(model: Model) {
         val views = modelRows[model.archive] ?: return
+        if (views.progress.visibility == View.VISIBLE) return // already downloading from this screen
 
         if (ModelDownloader.isInstalled(this, model)) {
             selectModel(model.archive)

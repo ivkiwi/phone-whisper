@@ -16,6 +16,24 @@ class LocalTranscriber private constructor(
     /** Voice activity detector gating streaming sessions; null when disabled or unavailable. */
     private val vad: Vad? = null,
 ) {
+    // Native handles are freed only when no decode or session still uses them: a reload can
+    // race an utterance that was cancelled in the UI but is still decoding.
+    private val usage = Any()
+    private var users = 0
+    private var releaseRequested = false
+
+    private fun tryAcquire(): Boolean = synchronized(usage) {
+        if (releaseRequested) false else { users++; true }
+    }
+
+    private fun done() = synchronized(usage) {
+        if (--users == 0 && releaseRequested) freeNative()
+    }
+
+    private fun <T> session(create: () -> T): T? {
+        if (!tryAcquire()) return null
+        return try { create() } catch (t: Throwable) { done(); throw t }
+    }
 
     /** True if the loaded model is a streaming (online) model. */
     val isStreaming: Boolean get() = online != null
@@ -46,7 +64,7 @@ class LocalTranscriber private constructor(
     ): LiveSession? {
         val rec = offline ?: return null
         val v = vad ?: return null
-        return SegmentedSession(rec, v, sampleRate, onUpdate)
+        return session { SegmentedSession(rec, v, sampleRate, onUpdate, ::done) }
     }
 
     /**
@@ -58,10 +76,19 @@ class LocalTranscriber private constructor(
         sampleRate: Int = 16000,
         onUpdate: StreamingSession.UpdateListener? = null,
     ): StreamingSession? =
-        online?.let { StreamingSession(it, sampleRate, onUpdate, vad) }
+        online?.let { rec -> session { StreamingSession(rec, sampleRate, onUpdate, vad, ::done) } }
 
     /** Transcribe raw PCM float samples. Blocking — call from background thread. */
     fun transcribe(samples: FloatArray, sampleRate: Int = 16000): String {
+        check(tryAcquire()) { "Model was released, try again" }
+        try {
+            return decodeOnce(samples, sampleRate)
+        } finally {
+            done()
+        }
+    }
+
+    private fun decodeOnce(samples: FloatArray, sampleRate: Int): String {
         online?.let { rec ->
             // Streaming recognizer used in one-shot mode: feed all audio, append a
             // short tail of silence so the encoder emits its final frames, then drain.
@@ -84,8 +111,14 @@ class LocalTranscriber private constructor(
         return result.text.trim()
     }
 
-    /** Explicitly release native resources associated with the recognizer. */
-    fun release() {
+    /** Release native resources now, or as soon as the last decode or session using them ends. */
+    fun release() = synchronized(usage) {
+        if (releaseRequested) return@synchronized
+        releaseRequested = true
+        if (users == 0) freeNative()
+    }
+
+    private fun freeNative() {
         offline?.release()
         online?.release()
         vad?.release()
@@ -105,6 +138,7 @@ class LocalTranscriber private constructor(
         private val sampleRate: Int,
         private val onUpdate: UpdateListener? = null,
         private val vad: Vad? = null,
+        private val onClosed: () -> Unit = {},
     ) : LiveSession {
         /** Live progress, called on the decoder thread. */
         interface UpdateListener {
@@ -207,6 +241,7 @@ class LocalTranscriber private constructor(
                 Log.e("StreamingSession", "decode error: ${e.message}")
             } finally {
                 stream.release()
+                onClosed()
             }
         }.apply { isDaemon = true; start() }
 
@@ -262,6 +297,7 @@ class LocalTranscriber private constructor(
         private val vad: Vad,
         private val sampleRate: Int,
         private val onUpdate: StreamingSession.UpdateListener?,
+        private val onClosed: () -> Unit,
     ) : LiveSession {
         private val queue = LinkedBlockingQueue<FloatArray>()
         private val committed = StringBuilder()
@@ -301,6 +337,8 @@ class LocalTranscriber private constructor(
                 if (!aborted) decodePhrase(forced = false, final = true)
             } catch (e: Exception) {
                 Log.e("SegmentedSession", "decode error: ${e.message}")
+            } finally {
+                onClosed()
             }
         }.apply { isDaemon = true; start() }
 

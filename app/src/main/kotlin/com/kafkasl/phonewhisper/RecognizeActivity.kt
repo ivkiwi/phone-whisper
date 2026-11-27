@@ -133,7 +133,7 @@ class RecognizeActivity : Activity() {
     override fun onStop() {
         super.onStop()
         // Leaving the window (home, another app) abandons the recording.
-        if (!finished && !isChangingConfigurations) {
+        if (!finished) { // handled config changes (manifest) never get here
             DictationEngine.cancel(listener)
             finishWith(null)
         }

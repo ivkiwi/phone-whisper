@@ -69,6 +69,7 @@ object AppUpdater {
             var done = part.length()
             ModelDownloader.downloadWithRetry(update.apkUrl, part) { delta -> done += delta; onProgress(done) }
             if (!part.renameTo(apk)) throw IOException("Failed to save ${apk.name}")
+            File("${part.path}.etag").delete()
             val code = ctx.packageManager.getPackageArchiveInfo(apk.path, 0)?.longVersionCode
             if (code != update.versionCode) {
                 apk.delete()
