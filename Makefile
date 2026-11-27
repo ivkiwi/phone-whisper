@@ -24,7 +24,7 @@ install: build
 	@echo "APK sent — approve install on phone"
 
 adb-install: build
-	$(ANDROID_HOME)/platform-tools/adb install -r $(APK)
+	$(ANDROID_HOME)/platform-tools/adb install -r -d $(APK)  # -d: CI builds carry higher versionCodes
 
 ## Push a model to the phone's internal storage (usage: make push-model MODEL=/path/to/model-dir)
 push-model:

@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -54,20 +54,35 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      # The in-app updater (AppUpdater.kt) installs the APK from the latest `build-<n>` release;
-      # versionCode is the same run number (app/build.gradle.kts).
-      - name: Publish release
-        if: github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
+  # Separate job so only this step holds a write token: the debug signing key is public, so
+  # whoever can publish a release can push an update to every install (AppUpdater.kt).
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: phone-whisper-debug-apk
+
+      - name: Publish release build-<run number> (versionCode, see app/build.gradle.kts)
         run: |
           set -euo pipefail
           tag="build-$GITHUB_RUN_NUMBER"
-          cp app/build/outputs/apk/debug/app-debug.apk phone-whisper.apk
-          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" phone-whisper.apk --clobber -R "$GITHUB_REPOSITORY"  # job re-run
-          else
-            gh release create "$tag" phone-whisper.apk -R "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" --title "Build $GITHUB_RUN_NUMBER" --latest \
-              --notes "Debug APK built from $GITHUB_SHA."
+          mv app-debug.apk phone-whisper.apk
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" phone-whisper.apk --clobber  # job re-run
+            exit 0
           fi
+          # A re-run of an old run must not move "latest" back below a newer build.
+          newest=$(gh release list --limit 100 --json tagName \
+            --jq '[.[].tagName | select(test("^build-[0-9]+$")) | ltrimstr("build-") | tonumber] | max // 0')
+          latest=$([ "$GITHUB_RUN_NUMBER" -gt "$newest" ] && echo true || echo false)
+          gh release create "$tag" phone-whisper.apk --target "$GITHUB_SHA" \
+            --title "Build $GITHUB_RUN_NUMBER" --latest="$latest" \
+            --notes "Debug APK built from $GITHUB_SHA."

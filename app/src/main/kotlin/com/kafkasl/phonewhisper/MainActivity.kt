@@ -20,15 +20,14 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.radiobutton.MaterialRadioButton
-import java.io.File
+import androidx.lifecycle.Lifecycle
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var statusSubtitle: TextView
     private lateinit var updateRowSub: TextView
     private var pendingUpdate: AppUpdate? = null
-    private var downloadedApk: File? = null
-    private var updateBusy = false
+    private var checkingUpdate = false
     private lateinit var audioRowSub: TextView
     private lateinit var accRowSub: TextView
     private lateinit var cloudConfigContainer: LinearLayout
@@ -236,14 +235,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun checkForUpdate() {
         val current = AppUpdater.installedVersionCode(this)
-        updateBusy = true
+        checkingUpdate = true
         updateRowSub.text = "Build $current · checking..."
         Thread {
             val result = runCatching { AppUpdater.check(current) }
             runOnUiThread {
-                updateBusy = false
+                checkingUpdate = false
                 val update = result.getOrNull()
                 pendingUpdate = update
+                if (result.isSuccess && update == null) AppUpdater.clearDownloads(this)
                 updateRowSub.text = when {
                     result.isFailure -> "Build $current · check failed, tap to retry"
                     update != null -> "Build ${update.versionCode} available · tap to install"
@@ -254,40 +254,41 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onUpdateTap() {
-        if (updateBusy) return
+        if (checkingUpdate) return
         val update = pendingUpdate ?: return checkForUpdate()
-        downloadedApk?.takeIf { it.isFile }?.let { installUpdate(update, it); return }
+        if (!AppUpdater.canInstall(this)) {
+            // Ask before downloading: granting restarts the app on Android 11+.
+            updateRowSub.text = "Allow installs from Phone Whisper, then tap again"
+            AppUpdater.openInstallPermissionSettings(this)
+            return
+        }
+        AppUpdater.downloaded(this, update)?.let { AppUpdater.install(this, it); return }
 
-        updateBusy = true
         updateRowSub.text = "Downloading build ${update.versionCode}..."
         Thread {
-            var lastPct = -1
+            var lastMb = -1L
             val result = runCatching {
-                AppUpdater.download(this, update) { p ->
-                    val pct = (p * 100).toInt()
-                    if (pct != lastPct) {
-                        lastPct = pct
-                        runOnUiThread { updateRowSub.text = "Downloading build ${update.versionCode}: $pct%" }
+                AppUpdater.download(this, update) { bytes ->
+                    val mb = bytes / 1_000_000
+                    if (mb != lastMb) {
+                        lastMb = mb
+                        runOnUiThread { updateRowSub.text = "Downloading build ${update.versionCode}: $mb MB" }
                     }
                 }
             }
             runOnUiThread {
-                updateBusy = false
-                result.onSuccess { apk ->
-                    downloadedApk = apk
-                    installUpdate(update, apk)
-                }.onFailure { e ->
-                    updateRowSub.text = "Download failed: ${e.message} · tap to retry"
+                val apk = result.getOrNull()
+                updateRowSub.text = when {
+                    result.isFailure -> "Download failed: ${result.exceptionOrNull()?.message} · tap to retry"
+                    apk == null -> "Already downloading, tap again when it finishes"
+                    else -> "Build ${update.versionCode} downloaded · tap to install"
+                }
+                // Don't pop the installer over another app or from a recreated (dead) activity.
+                if (apk != null && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                    AppUpdater.install(this, apk)
                 }
             }
         }.start()
-    }
-
-    private fun installUpdate(update: AppUpdate, apk: File) {
-        updateRowSub.text = if (AppUpdater.install(this, apk))
-            "Build ${update.versionCode} downloaded · tap to install"
-        else
-            "Allow installs from Phone Whisper, then tap again"
     }
 
     // --- Model Rows ---
